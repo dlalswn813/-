@@ -248,7 +248,7 @@ with top_left:
             'font': {'size': 35,'weight': 'bold'}, 
             'valueformat': '.1f'  # 🚀 80.0% 소수점 한자리 유지
         },
-        title={'text': "불량 예측 확률", 'font': {'size': 18}},
+        title={'text': "불량 예측 확률", 'font': {'size': 18,,'weight': 'bold'}},
         gauge={
             'axis': {
                 'range': [0, 100], 
