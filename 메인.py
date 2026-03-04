@@ -240,6 +240,7 @@ def draw_traffic_light(score):
 top_left, top_right = st.columns([1, 2])
 
 with top_left:
+    st.markdown('<div style="height: 20px;"></div>', unsafe_allow_html=True)
     fig_gauge = go.Figure(go.Indicator(
         mode="gauge+number", 
         value=fail_prob,
@@ -377,13 +378,15 @@ with bot_right:
     # 4. 영향도가 큰 상위 5개 추출 (절대값 기준 정렬)
     shap_df['abs_val'] = shap_df['val'].abs()
     shap_df = shap_df.sort_values('abs_val', ascending=True).tail(5)
+
+    colors = ['#67000d', '#a50f15', '#cb181d', '#ef3b2c', '#fb6a4a']
     
     # 5. 차트 그리기
     fig_shap = go.Figure(go.Bar(
         y=shap_df['항목'],      # ✅ 이제 여기서 한글 변수명 사용
         x=shap_df['val'], 
         orientation='h', 
-        marker_color=["#ab0000" if x > 0 else "#3f9adc" for x in shap_df['val']]
+        marker_color=[colors[i] if val > 0 else "#3f9adc" for i, val in enumerate(shap_df['val'])]
     ))
     
     fig_shap.update_layout(
