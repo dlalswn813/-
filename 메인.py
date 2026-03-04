@@ -246,7 +246,7 @@ with top_left:
         value=fail_prob,
         number={
             'suffix': "%", 
-            'font': {'size': 35}, 
+            'font': {'size': 35,'weight': 'bold'}, 
             'valueformat': '.1f'  # 🚀 80.0% 소수점 한자리 유지
         },
         title={'text': "불량 예측 확률", 'font': {'size': 18}},
