@@ -293,6 +293,7 @@ with top_right:
     k1, k2, k3, k4, k5 = st.columns(5)
     
     # KPI 카드 렌더링
+    target_page = "센서알림"
     k1.markdown(f"""
                 <a href="{target_page}" target="_self" style="text-decoration: none; color: inherit;">
         <div class="kpi-card" style="cursor: pointer;">
