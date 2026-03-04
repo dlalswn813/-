@@ -16,7 +16,7 @@ DATA_PATH  = str(ROOT_DIR / "mice_final_data_with_id.csv")
 
 st.set_page_config(layout="wide", page_title="QA Analysis")
 
-# --- CSS 스타일 수정 (여기가 포인트입니다) ---
+# --- CSS 스타일 수정 ---
 st.markdown("""
     <style>
     .block-container {padding-top: 4rem !important; padding-bottom: 0rem !important;}
@@ -43,13 +43,11 @@ def load_all():
         df = pd.read_csv(DATA_PATH)
         
         # 1. 모델이 요구하는 파생변수 5개 동일하게 계산
-        # '차이의 차이' 변수
         df['viscosity_deviation_diff_3_2'] = df.get('stage3_viscosity_deviation', 0) - df.get('stage2_viscosity_deviation', 0)
         df['flow_deviation_diff_5_4'] = df.get('stage5_flow_deviation', 0) - df.get('stage4_flow_deviation', 0)
         df['viscosity_deviation_diff_5_1'] = df.get('stage5_viscosity_deviation', 0) - df.get('stage1_viscosity_deviation', 0)
         df['co2_deviation_diff_5_1'] = df.get('stage5_co2_deviation', 0) - df.get('stage1_co2_deviation', 0)
 
-        # '기울기' 변수
         n_cols = [f'stage{i}_n_deviation' for i in range(1, 6)]
         if all(c in df.columns for c in n_cols):
             df['n_deviation_slope'] = np.polyfit(range(5), df[n_cols].values.T, 1)[0]
@@ -93,7 +91,6 @@ if error_msg:
 explainer = get_explainer(model)
 
 def translate_feature(col):
-    # (1) 특수 파생변수 강제 매핑
     manual_map = {
         'viscosity_deviation_diff_3_2': 'S3-S2 점도편차 차이',
         'flow_deviation_diff_5_4': 'S5-S4 유량편차 차이',
@@ -104,7 +101,6 @@ def translate_feature(col):
     if col in manual_map:
         return manual_map[col]
         
-    # (2) 일반 스테이지 변수 처리
     base_sensor_dict = {
         'temp': '온도', 'humidity': '습도', 'flow': '유량', 'density': '밀도',
         'viscosity': '점도', 'co2': 'CO2', 'o2': 'O2', 'n': 'N2',
@@ -113,7 +109,6 @@ def translate_feature(col):
         'o2_deviation': 'O2 편차', 'n_deviation': 'N2 편차'
     }
     
-    # 단순 센서명 변환 (SPC 리스트용)
     if col in base_sensor_dict:
         return base_sensor_dict[col]
 
@@ -150,7 +145,7 @@ res_color = "#FF4B4B" if model_pred == 1 else "#00CC96"
 shap_vals = explainer.shap_values(input_df)
 top_idxs = np.argsort(shap_vals[0])[-3:][::-1]
 
-# --- 1. 점검 메시지 데이터베이스 정의 ---
+# --- 점검 메시지 ---
 check_msgs = {
     '온도': {'High': '히터 가열 과다 및 냉각 라인 점검', 'Low': '히터 단선 및 예열 시간 부족 점검'},
     '습도': {'High': '외기 유입 및 배기(Exhaust) 성능 점검', 'Low': '가습 장치 작동 및 밀폐 상태 점검'},
@@ -162,12 +157,11 @@ check_msgs = {
     'CO2': {'High': '버블러(Bubbler) 과잉 주입 여부 점검', 'Low': 'CO2 인젝터 노즐 및 실린더 점검'}
 }
 
-# --- 2. TOP 3 카드 섹션 (PASS/NG 분기 처리) ---
-if model_pred == 0:  # 판정이 PASS인 경우
+# --- TOP 3 카드 섹션 ---
+if model_pred == 0:  
     st.success("✅ **불량 위험이 낮습니다** ")
-    st.markdown('<div style="height: 15px;"></div>', unsafe_allow_html=True) # 여백
+    st.markdown('<div style="height: 15px;"></div>', unsafe_allow_html=True)
 else:
-    # 판정이 NG(불량)인 경우에만 TOP 3 카드를 보여줌
     c1, c2, c3 = st.columns(3)
 
     for i, idx in enumerate(top_idxs):
@@ -183,9 +177,9 @@ else:
         else:
             color, arrow = "#95A5A6", "—"
 
-        action_msg = "해당 센서 및 연결 라인 상태 확인" # 기본값
+        action_msg = "해당 센서 및 연결 라인 상태 확인" 
         for key in check_msgs.keys():
-            if key in kor_name: # 예: "S3 온도"에 "온도"가 있는지 확인
+            if key in kor_name: 
                 action_msg = check_msgs[key].get(status, action_msg)
                 break
 
@@ -206,7 +200,8 @@ else:
                 ''',
                 unsafe_allow_html=True
             )
-# --- 4. SPC 추세 및 판정 결과 ---
+
+# --- SPC 추세 및 판정 결과 ---
 title_col, result_col = st.columns([7, 3])
 
 with title_col:
@@ -239,10 +234,8 @@ v_map = {
     'o2_deviation': 'O2 편차', 'n_deviation': 'N2 편차'
 }
 
-# --- 1. TOP 3 리스트 추출 ---
 top_3_list = [model_features[idx] for idx in top_idxs]
 
-# --- 2. SPC 차트 그리드 생성 ---
 for r in range(2):
     grid = st.columns(4)
     for c in range(4):
@@ -256,7 +249,6 @@ for r in range(2):
         y_mean = [stats['mean'].get(f"stage{j}_{v_name}", 0) for j in range(1, 6)]
         y_std = [stats['std'].get(f"stage{j}_{v_name}", 0) for j in range(1, 6)]
 
-        # --- [추가] Y축 범위 최적화 로직 ---
         avg_std = sum(y_std) / 5
         avg_mean = sum(y_mean) / 5
         view_margin = avg_std * 4 if avg_std > 0 else abs(avg_mean) * 0.1
@@ -266,15 +258,26 @@ for r in range(2):
         final_max = max(max(all_points), avg_mean + view_margin)
         pad = (final_max - final_min) * 0.05
 
-        # --- 스타일 및 데이터 준비 ---
         line_color = "#6e6e6e"
         line_width = 2
         m_colors = ['#6e6e6e'] * 5
         highlight_paths = [] 
 
-        if model_pred == 1: # NG일 때만 강조
+        # ✅ 수정된 하이라이트 매칭 로직 (정확한 센서 이름만 타겟팅)
+        if model_pred == 1: 
             for tf in top_3_list:
-                if v_name in tf:
+                # 모델 변수명에서 순수 센서 이름만 추출
+                if tf.startswith('stage'):
+                    base_tf = tf.split('_', 1)[1]  
+                elif '_diff_' in tf:
+                    base_tf = tf.split('_diff_')[0] 
+                elif '_slope' in tf:
+                    base_tf = tf.replace('_slope', '') 
+                else:
+                    base_tf = tf
+                
+                # 추출한 순수 센서 이름이 차트의 센서 이름과 정확히 같을 때만 색칠
+                if base_tf == v_name:
                     if "slope" in tf:
                         line_color = "#FF4B4B"; line_width = 3
                         m_colors = ["#FF4B4B"] * 5
@@ -296,21 +299,17 @@ for r in range(2):
         with grid[c]:
             fig = go.Figure()
             
-            # 1. 배경 평균 점선
             fig.add_trace(go.Scatter(x=stages, y=y_mean, mode='lines', 
                                      line=dict(color='rgba(46, 204, 113, 0.4)', width=2, dash='dash')))
             
-            # 2. 메인 데이터 선 (회색 혹은 Slope일 때 빨강)
             fig.add_trace(go.Scatter(x=stages, y=y_curr, mode='lines', 
                                      line=dict(color=line_color, width=line_width)))
             
-            # 3. Diff 구간 빨간 선 덧그리기 (경로 추적)
             if model_pred == 1 and highlight_paths:
                 for path in highlight_paths:
                     fig.add_trace(go.Scatter(x=path['x'], y=path['y'], mode='lines', 
                                              line=dict(color="#FF4B4B", width=2), hoverinfo='skip'))
 
-            # 4. 마커를 최상단에 (회색 점이 빨간 선 위로 올라오도록)
             fig.add_trace(go.Scatter(
                 x=stages, y=y_curr, 
                 mode='markers', 
