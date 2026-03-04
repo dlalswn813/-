@@ -13,10 +13,9 @@ st.markdown("""
     <style>
     /* 1. 전체 페이지 상단 여백 조절 */
     .block-container { 
-        padding-top: 0.3rem !important; 
+        padding-top: 3.0rem !important; 
         padding-bottom: 0rem !important; 
     }
-    header { visibility: hidden; }
 
     /* 2. 대제목 스타일 및 간격 조절 */
     .main-title {

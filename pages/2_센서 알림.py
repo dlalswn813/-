@@ -136,6 +136,19 @@ hr { margin: 0.7rem 0 !important; }
   font-size: 0.9rem !important;
 }
 
+/* 알람 테이블 안내 문구 */
+.section-head{
+  display:flex;
+  align-items: baseline;
+  gap:0.1px;  
+  margin: 0 0 1px 0; 
+}
+.section-head .hint{
+  color: rgba(49, 51, 63, 0.55);
+  font-size: 0.92rem;
+  line-height: 1.2;
+}
+
 /* 조건 요약 칩 */
 .chip-row{ display:flex; flex-wrap:wrap; gap:8px; margin: 2px 0 8px 0; }
 .chip{
@@ -396,7 +409,7 @@ def build_alarm_table(df_in: pd.DataFrame, sensors_filtered: list[str], limits_m
                     "제품 ID": str(df_in.loc[i, "id"]),
                     "order": int(df_in.loc[i, "order"]),
                     "이탈 방향": direction,
-                    "한계선 이탈폭": dist,
+                    "한계선 이탈폭": f"{direction}{dist:.3f}",
                     "측정값": float(v[i]),
                 }
             )
@@ -423,6 +436,7 @@ if st.session_state.page == "main":
     with right:
         st.markdown('<div class="compact-popover">', unsafe_allow_html=True)
         with st.popover("조건", use_container_width=True):
+            st.caption("미선택 시 전체 항목이 조회됩니다.")
             c1, c2 = st.columns(2, gap="small")
 
             with c1:
@@ -464,7 +478,15 @@ if st.session_state.page == "main":
     st.divider()
 
     with left:
-        st.markdown("### 알람 내역")
+        st.markdown(
+            """
+        <div class="section-head">
+        <h3 style="margin:0;">알람 내역</h3>
+        <span class="hint">행을 클릭하면 해당 제품의 센서 관리도 상세로 이동합니다.</span>
+        </div>
+        """,
+            unsafe_allow_html=True,
+        )
 
         if alarms.empty:
             st.info("현재 조회 조건에서 발생한 알람이 없습니다.")
@@ -472,14 +494,22 @@ if st.session_state.page == "main":
             TABLE_HEIGHT = 560
 
             grid_df = alarms[
-                ["event_id", "공정 단계", "측정 항목", "제품 ID", "sensor_raw", "order", "이탈 방향", "한계선 이탈폭", "측정값"]
+                ["event_id", "제품 ID", "공정 단계", "측정 항목", "sensor_raw", "order", "한계선 이탈폭", "측정값"]
             ].copy()
 
             gb = GridOptionsBuilder.from_dataframe(grid_df)
+            gb.configure_default_column(
+                flex=1,
+                minWidth=130,
+                resizable=True,
+                sortable=True,
+                filter=True,
+            )
             gb.configure_selection(selection_mode="single", use_checkbox=False)
             gb.configure_column("event_id", hide=True)
             gb.configure_column("sensor_raw", hide=True)
             gb.configure_column("order", hide=True)
+            gb.configure_column("측정값", type=["numericColumn"], valueFormatter="x.toFixed(3)")
             gb.configure_pagination(enabled=False)
             gb.configure_grid_options(domLayout="normal")
             grid_options = gb.build()
@@ -490,7 +520,7 @@ if st.session_state.page == "main":
                 height=TABLE_HEIGHT,
                 update_mode=GridUpdateMode.SELECTION_CHANGED,
                 data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-                fit_columns_on_grid_load=True,
+                fit_columns_on_grid_load=False,
                 theme="streamlit",
                 key="alarm_grid",
             )
