@@ -379,7 +379,7 @@ with bot_right:
     shap_df['abs_val'] = shap_df['val'].abs()
     shap_df = shap_df.sort_values('abs_val', ascending=True).tail(5)
 
-    colors = ['#67000d', '#a50f15', '#cb181d', '#ef3b2c', '#fb6a4a']
+    colors = ['#fb6a4a', '#ef3b2c', '#cb181d', '#a50f15', '#67000d']
     
     # 5. 차트 그리기
     fig_shap = go.Figure(go.Bar(
