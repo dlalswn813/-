@@ -140,18 +140,41 @@ def get_feature_kor_map(columns):
             
     return mapping
 
-def get_h_score(df, latest_row):
-    sensor_cols = [c for c in df.columns if any(x in c for x in ['temp', 'humidity', 'deviation'])]
-    stats = df[sensor_cols].agg(['mean', 'std']).T
-    penalties = 0
-    for col in sensor_cols:
-        val = latest_row[col]
+def get_h_score(df):
+    # 1. 수치형 컬럼 선택 (label 제외)
+    numeric_cols = df.select_dtypes(include=['number']).columns
+    numeric_cols = [c for c in numeric_cols if c != 'label']
+    
+    # 2. [UCL/LCL 계산] label이 0인 정상 데이터만 추출하여 기준 설정
+    normal_df = df[df['label'] == 0][numeric_cols]
+    
+    # 만약 정상 데이터가 하나도 없다면 전체 데이터를 기준으로 함 (에러 방지)
+    if normal_df.empty:
+        normal_df = df[numeric_cols]
+        
+    stats = normal_df.agg(['mean', 'std']).T
+    
+    # 3. [검사 대상] 최근 30개 데이터 추출
+    recent_df = df[numeric_cols].tail(30)
+    
+    total_anomalies = 0
+    
+    for col in numeric_cols:
         mu = stats.loc[col, 'mean']
         sigma = stats.loc[col, 'std']
-        z = abs((val - mu) / (sigma + 1e-6))
-        if z > 3:
-            penalties += (z - 3) * 5
-    return max(0, 100 - penalties)
+        
+        # 3-Sigma 기반 제어 한계선 (UCL, LCL)
+        ucl = mu + (3 * sigma)
+        lcl = mu - (3 * sigma)
+        
+        # 최근 30개 중 정상 범위를 벗어난 데이터 개수 카운트
+        anomalies = recent_df[col][(recent_df[col] > ucl) | (recent_df[col] < lcl)].count()
+        total_anomalies += anomalies
+
+    # 4. 변수당 평균 이상 발생 수 계산
+    avg_anomalies = total_anomalies / len(numeric_cols) if len(numeric_cols) > 0 else 0
+    
+    return avg_anomalies
 
 @st.cache_resource(ttl=10)
 def load_all():
@@ -192,7 +215,7 @@ def load_all():
         df['prob'] = (model.predict_proba(X_final)[:, 1] * 100).round(1)
         latest_pool = Pool(X_final.tail(1))
         latest_shap = model.get_feature_importance(data=latest_pool, type="ShapValues")[0, :-1]
-        h_score = get_h_score(df, df.iloc[-1])
+        h_score = get_h_score(df)
         
         return df, X_final, model, features, latest_shap, h_score, None
     except Exception as e:
@@ -299,7 +322,7 @@ with top_right:
         <div class="kpi-card" style="cursor: pointer;">
             <div class="kpi-label">설비 이상 감지(개)</div>
             <div class="kpi-value">{h_score:.0f}</div>
-            <div class="kpi-bottom">{draw_traffic_light(h_score)}</div>
+            <div class="kpi-bottom" style="height: 20px;"></div>
         </div>
     </a>
     """, unsafe_allow_html=True)
