@@ -724,6 +724,7 @@ else:
             y=y,
             mode="lines",
             name=y_title,
+            line=dict(color="gray", width=2),
             customdata=np.column_stack([ids, flags]),
             hovertemplate=(
                 f"{y_title}=%{{y:.4f}}<br>"
@@ -759,11 +760,20 @@ else:
 
     # 평균/UCL/LCL 수평선
     if np.isfinite(lim.get("mean", np.nan)):
-        fig.add_hline(y=float(lim["mean"]))
+        fig.add_hline(
+            y=float(lim["mean"]),
+            line=dict(color="limegreen", width=2, dash="solid"),
+        )
     if np.isfinite(lim.get("ucl", np.nan)):
-        fig.add_hline(y=float(lim["ucl"]))
+        fig.add_hline(
+            y=float(lim["ucl"]),
+            line=dict(color="red", width=2, dash="dot"),
+        )
     if np.isfinite(lim.get("lcl", np.nan)):
-        fig.add_hline(y=float(lim["lcl"]))
+        fig.add_hline(
+            y=float(lim["lcl"]),
+            line=dict(color="red", width=2, dash="dot"),
+        )
 
     # 선택 알람 강조: 세로선 + "빨간 점" (hover에서 order 제거)
     fig.add_vline(x=float(center), line_dash="dash")
