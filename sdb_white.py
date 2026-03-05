@@ -6,13 +6,9 @@ import re
 
 # =========================================================
 # Process Monitor (Latest) + Control-Limit Anomaly
-# - 사후 분석용 메인 대시보드 (예측 모델/SHAP 제거)
-# - 사이드바(메뉴 탭) 복구 완료
-# - Show ONLY the last sample (latest product)
-# - KPI 4개: 총 생산량 / 불량 제품 수 / 불량 비율 / 설비 이상 감지 수
-# - Stage Snapshot: Stage별 4변수 표시 (필터 추가)
-# - Recent Trend: "가장 한계선 초과가 큰" feature 자동 선택 표시 (필터 추가)
-# - Right: Stage Profile 8개 미니 그래프
+# - 사후 분석용 메인 대시보드 (1페이지)
+# - 불량 예측 및 SHAP 완전 제거됨
+# - Stage Snapshot: 현업 SCADA 스타일 (원형 게이지 + 전체 배경 색상)
 # =========================================================
 
 st.set_page_config(page_title="공정 실시간 모니터링", layout="wide")
@@ -115,11 +111,11 @@ METRICS = [m for m in CORE_METRICS_ORDER if m in METRICS] + [m for m in METRICS 
 DEV_METRICS = [m for m in METRICS if m.endswith("_deviation")]
 
 # ----------------------------
-# Styling (fixed for White Theme)
+# Styling (White Theme)
 # ----------------------------
 SAMSUNG_BLUE_2 = "#1428A0"
-GOOD = "#16A34A"
-WARN = "#D97706"
+GOOD = "#10B981"
+WARN = "#F59E0B"
 BAD = "#DC2626"
 TEXT = "#111827"
 MUTED = "#6B7280"
@@ -135,13 +131,11 @@ st.markdown(
         --bg:{BG}; --panel:{PANEL}; --stroke:{STROKE};
         --text:{TEXT}; --muted:{MUTED};
         --blue2:{SAMSUNG_BLUE_2};
-        --good:{GOOD}; --warn:{WARN}; --bad:{BAD};
       }}
       .stApp {{ background: var(--bg); color: var(--text); }}
       header, [data-testid="stHeader"] {{ background: rgba(0,0,0,0); }}
       footer {{ visibility: hidden; }}
 
-      /* 사이드바(메뉴 탭) 보이기 및 스타일링 */
       [data-testid="stSidebar"] {{
         background-color: #F8FAFC;
         border-right: 1px solid #E5E7EB;
@@ -179,42 +173,12 @@ st.markdown(
         box-shadow: 0 1px 2px rgba(0,0,0,0.02);
       }}
       .pt {{ font-weight: 900; margin-bottom: 8px; }}
-      .muted {{ color: var(--muted); }}
       .pill {{
         display:inline-block; padding: 2px 10px; border-radius:999px;
         border: 1px solid rgba(20,40,160,0.2);
         background: rgba(20,40,160,0.05);
         color: var(--blue2); font-size: 12px; font-weight: 800; margin-left: 8px;
       }}
-
-      .stagecard {{
-        background: #FFFFFF;
-        border: 1px solid var(--stroke);
-        border-radius: 12px;
-        padding: 10px 12px;
-        min-height: 190px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.02);
-      }}
-      .stagehdr {{
-        display:flex; justify-content:space-between; align-items:center;
-        margin-bottom: 8px;
-      }}
-      .stagetitle {{ font-weight: 900; }}
-      .statusdot {{
-        width:10px; height:10px; border-radius:999px; display:inline-block;
-        margin-left: 8px;
-      }}
-      .row2 {{ display:flex; justify-content:space-between; gap:10px; }}
-      .m {{
-        flex:1;
-        background: #F8FAFC;
-        border: 1px solid #E2E8F0;
-        border-radius: 10px;
-        padding: 8px 10px;
-      }}
-      .ml {{ color: var(--muted); font-size: 11px; font-weight: 800; }}
-      .mv {{ font-size: 18px; font-weight: 900; }}
-      .small {{ font-size: 12px; }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -277,7 +241,6 @@ def limit_exceed_score(val, feature: str) -> float:
         return 0.0
     return abs((float(val) - mu) / sd)
 
-# 설비 이상 감지
 def count_equipment_anomalies(df_window: pd.DataFrame) -> int:
     cnt = 0
     for _, r in df_window.iterrows():
@@ -342,15 +305,14 @@ st.markdown("")
 left, right = st.columns([2.55, 1.45], gap="medium")
 
 with left:
-    st.markdown('<div class="panel"><div class="pt">공정별 실시간 상태 요약 <span class="pill">온도/습도 + 핵심 편차</span></div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel"><div class="pt">공정별 실시간 상태 요약 (SCADA View) <span class="pill">전체 배경 색칠 모드</span></div></div>', unsafe_allow_html=True)
 
-    # 필터 1: Stage Snapshot 하단 표시 변수 선택
-    stage_metric_options = ["[자동] 위험 편차 Top 2"] + [SENSOR_KO.get(m, m) for m in DEV_METRICS]
-    selected_stage_metric = st.selectbox("공정 카드 하단 표시 변수 선택", stage_metric_options)
+    stage_metric_options = ["[자동] 공정별 가장 위험한 편차"] + [SENSOR_KO.get(m, m) for m in DEV_METRICS]
+    selected_stage_metric = st.selectbox("공정 게이지 모니터링 지표 선택", stage_metric_options)
 
     cols = st.columns(len(STAGES), gap="small")
 
-    def pick_stage_dev_metrics(stage: int, topk: int = 2) -> list[str]:
+    def pick_worst_metric_for_stage(stage: int) -> str:
         candidates = []
         for m in DEV_METRICS:
             f = fcol(stage, m)
@@ -360,78 +322,62 @@ with left:
                 over = is_over_limit(v, f)
                 candidates.append(((10.0 if over else 0.0) + score, m))
         candidates.sort(reverse=True)
-        picked = [m for _, m in candidates[:topk]]
-        if len(picked) < topk:
-            for m in CORE_METRICS_ORDER:
-                if m in DEV_METRICS and m not in picked:
-                    f = fcol(stage, m)
-                    if f in df.columns:
-                        picked.append(m)
-                if len(picked) >= topk:
-                    break
-        return picked
+        if candidates: return candidates[0][1]
+        return DEV_METRICS[0]
 
-    def stage_is_anomaly(stage: int) -> bool:
-        feats = [fcol(stage, "temp"), fcol(stage, "humidity")]
-        for m in pick_stage_dev_metrics(stage, 2):
-            feats.append(fcol(stage, m))
-        for f in feats:
-            v = pd.to_numeric(cur.get(f), errors="coerce")
-            if is_over_limit(v, f): return True
-        return False
-
+    # 🚀 완벽한 SCADA 스타일 카드 렌더링 루프
     for i, s in enumerate(STAGES):
-        tf = fcol(s, "temp")
-        hf = fcol(s, "humidity")
-        temp = pd.to_numeric(cur.get(tf), errors="coerce") if tf in df.columns else np.nan
-        hum = pd.to_numeric(cur.get(hf), errors="coerce") if hf in df.columns else np.nan
-
-        # 선택된 값에 따라 보여줄 편차 변수 결정
-        if selected_stage_metric == "[자동] 위험 편차 Top 2":
-            dev_ms = pick_stage_dev_metrics(s, 2)
+        if selected_stage_metric == "[자동] 공정별 가장 위험한 편차":
+            target_m = pick_worst_metric_for_stage(s)
         else:
-            eng_metric = next(k for k, v in SENSOR_KO.items() if v == selected_stage_metric)
-            dev_ms = [eng_metric]
+            target_m = next(k for k, v in SENSOR_KO.items() if v == selected_stage_metric)
 
-        dev_vals = []
-        for m in dev_ms:
-            f = fcol(s, m)
-            v = pd.to_numeric(cur.get(f), errors="coerce") if f in df.columns else np.nan
-            dev_vals.append((m, v, f))
+        target_f = fcol(s, target_m)
+        val = pd.to_numeric(cur.get(target_f), errors="coerce")
+        metric_ko = SENSOR_KO.get(target_m, target_m)
+        
+        mu, sd, lcl, ucl = CTRL_LIMITS.get(target_f, (0, 0, 0, 0))
+        
+        # 색상 및 상태 판별 (Z-score 기반)
+        bg_color = GOOD
+        pct = 0
+        if pd.notna(val) and sd > 0:
+            z = abs(val - mu) / sd
+            if z >= 3:
+                bg_color = BAD
+            elif z >= 2:
+                bg_color = WARN
+            # 4시그마를 100%로 잡고 링(Donut)을 얼마나 채울지 퍼센트 계산
+            pct = min((z / 4.0) * 100, 100)
+            
+        val_str = f"{val:.2f}" if pd.notna(val) else "-"
 
-        stage_anom = stage_is_anomaly(s)
-        dot_color = BAD if stage_anom else GOOD
+        # 🚀 순수 SVG 미니 바 차트 (최근 10건) 생성
+        recent_10 = hist[target_f].tail(10).values
+        svg_bars = ""
+        if len(recent_10) > 0:
+            min_v, max_v = np.nanmin(recent_10), np.nanmax(recent_10)
+            n_vals = len(recent_10)
+            for j, v in enumerate(recent_10):
+                if pd.isna(v): continue
+                if max_v == min_v:
+                    norm_h = 15
+                else:
+                    norm_h = max(2, ((v - min_v) / (max_v - min_v)) * 30)
+                
+                # 우측 정렬되도록 x축 계산
+                x = (10 - n_vals + j) * 10 + 1.5
+                y = 30 - norm_h
+                
+                # 3시그마 벗어난 과거 데이터는 하얀색 막대, 정상은 반투명 하얀색으로 깔끔하게
+                bar_color = "#ffffff" if is_over_limit(v, target_f) else "rgba(255,255,255,0.4)"
+                svg_bars += f'<rect x="{x}" y="{y}" width="7" height="{norm_h}" fill="{bar_color}" rx="1" />'
+
+        # 🚀 들여쓰기(Indentation) 제거: Streamlit Markdown 파서 오류 방지용 완벽한 한 줄 HTML
+        html_card = f"""<div style="background-color: {bg_color}; border-radius: 12px; padding: 15px; text-align: center; color: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1); height: 210px; display: flex; flex-direction: column; justify-content: space-between;"><div><div style="font-weight: 900; font-size: 16px;">공정 {s}</div><div style="font-size: 13px; opacity: 0.9; margin-bottom: 5px;">{metric_ko}</div></div><div style="flex-grow: 1; display: flex; align-items: center; justify-content: center;"><svg viewBox="0 0 36 36" style="width: 85px; height: 85px; overflow: visible;"><path style="fill:none; stroke:rgba(255,255,255,0.25); stroke-width:3.5;" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" /><path style="fill:none; stroke:#ffffff; stroke-width:3.5; stroke-linecap:round; stroke-dasharray:{pct}, 100;" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" /><text x="18" y="21.5" style="fill:#ffffff; font-size:8.5px; font-weight:bold; text-anchor:middle;">{val_str}</text></svg></div><div style="height: 30px; width: 100%; margin-top: 5px;"><svg width="100%" height="100%" viewBox="0 0 100 30" preserveAspectRatio="none">{svg_bars}</svg></div></div>"""
 
         with cols[i]:
-            parts = []
-            parts.append('<div class="stagecard">')
-
-            parts.append('<div class="stagehdr">')
-            parts.append(f'<div class="stagetitle">공정 {s}</div>')
-            parts.append(f'<div><span class="muted small">상태</span><span class="statusdot" style="background:{dot_color}"></span></div>')
-            parts.append("</div>")
-
-            parts.append('<div class="row2">')
-            parts.append(f'<div class="m"><div class="ml">온도 (°C)</div><div class="mv">{fmtv(temp,2)}</div></div>')
-            parts.append(f'<div class="m"><div class="ml">습도 (%)</div><div class="mv">{fmtv(hum,2)}</div></div>')
-            parts.append("</div>")
-
-            for (m, v, f) in dev_vals:
-                over = is_over_limit(v, f)
-                color = BAD if over else TEXT
-                metric_ko = SENSOR_KO.get(m, m)
-                parts.append('<div class="row2" style="margin-top:8px;">')
-                parts.append(
-                    f'<div class="m">'
-                    f'<div class="ml">{metric_ko}</div>'
-                    f'<div class="mv" style="color:{color};">{fmtv(v,2)}</div>'
-                    f'<div class="muted small">허용 한계: μ±{CTRL_K:.1f}σ</div>'
-                    f"</div>"
-                )
-                parts.append("</div>")
-
-            parts.append("</div>")
-            st.markdown("".join(parts), unsafe_allow_html=True)
+            st.markdown(html_card, unsafe_allow_html=True)
 
     st.markdown("")
 
@@ -440,7 +386,6 @@ with left:
     # ----------------------------
     st.markdown('<div class="panel"><div class="pt">Recent Trend <span class="pill">한계선 초과(3σ) 집중 모니터링</span></div></div>', unsafe_allow_html=True)
 
-    # 듀얼 필터(공정/지표 선택)를 위한 초기값 자동 탐색
     def pick_most_critical_feature() -> str:
         scored = []
         exceeded = []
@@ -457,8 +402,8 @@ with left:
         return scored[0][1] if scored else "run"
 
     auto_critical_feat = pick_most_critical_feature()
+    trend_options_dict = {f: translate_feature_name(f) for f in FEATURE_COLS if "stage" in f}
     
-    # 기본값 설정 (가장 위험한 변수를 기본 선택값으로 지정)
     default_stage = 1
     default_metric = METRICS[0] if METRICS else "temp"
     
@@ -471,7 +416,6 @@ with left:
     s_idx = STAGES.index(default_stage) if default_stage in STAGES else 0
     m_idx = METRICS.index(default_metric) if default_metric in METRICS else 0
 
-    # 필터 2: 공정/지표 듀얼 필터
     filter_col1, filter_col2 = st.columns(2)
     with filter_col1:
         selected_stage = st.selectbox("분석 공정 (Stage) 선택", STAGES, index=s_idx)
@@ -487,13 +431,10 @@ with left:
     mu, sd, lcl, ucl = CTRL_LIMITS.get(trend_feature, (np.nan, np.nan, np.nan, np.nan))
 
     fig = go.Figure()
-
     translated_trend_feature = translate_feature_name(trend_feature)
 
-    # 전체 라인 (기본 파란색)
     fig.add_trace(go.Scatter(x=plot["run"], y=plot[trend_feature], mode="lines+markers", name=translated_trend_feature, line=dict(color=SAMSUNG_BLUE_2)))
 
-    # 한계선(UCL, LCL)을 넘은 데이터 포인트만 빨간색으로 강조
     if np.isfinite(lcl) and np.isfinite(ucl):
         out_of_control = plot[(plot[trend_feature] > ucl) | (plot[trend_feature] < lcl)]
         if not out_of_control.empty:
@@ -594,6 +535,3 @@ with right:
         col = grid_cols[idx % 4]
         with col:
             st.plotly_chart(fig_m, use_container_width=True)
-
-    # 빈 공간 확보
-    st.markdown("<br><br><br>", unsafe_allow_html=True)
