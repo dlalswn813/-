@@ -8,7 +8,9 @@ import re
 # Process Monitor (Latest) + Control-Limit Anomaly
 # - 사후 분석용 메인 대시보드 (1페이지)
 # - 불량 예측 및 SHAP 완전 제거됨
-# - Stage Snapshot: 현업 SCADA 스타일 (원형 게이지 + 전체 배경 색상)
+# - Stage Snapshot: 현업 SCADA 스타일 (전체 배경 색상 + Z-Score + 툴팁 팝업)
+# - HTML 들여쓰기 렌더링 버그(글자 깨짐) 완벽 해결
+# - 불필요한 필터 및 라벨 텍스트 제거
 # =========================================================
 
 st.set_page_config(page_title="공정 실시간 모니터링", layout="wide")
@@ -111,7 +113,7 @@ METRICS = [m for m in CORE_METRICS_ORDER if m in METRICS] + [m for m in METRICS 
 DEV_METRICS = [m for m in METRICS if m.endswith("_deviation")]
 
 # ----------------------------
-# Styling (White Theme)
+# Styling (White Theme + Tooltip CSS)
 # ----------------------------
 SAMSUNG_BLUE_2 = "#1428A0"
 GOOD = "#10B981"
@@ -173,12 +175,83 @@ st.markdown(
         box-shadow: 0 1px 2px rgba(0,0,0,0.02);
       }}
       .pt {{ font-weight: 900; margin-bottom: 8px; }}
-      .pill {{
-        display:inline-block; padding: 2px 10px; border-radius:999px;
-        border: 1px solid rgba(20,40,160,0.2);
-        background: rgba(20,40,160,0.05);
-        color: var(--blue2); font-size: 12px; font-weight: 800; margin-left: 8px;
+      
+      /* Tooltip CSS 기믹 추가 */
+      .tooltip-container {{
+        position: relative;
+        display: inline-block;
+        cursor: help;
       }}
+      .tooltip-container .tooltip-text {{
+        visibility: hidden;
+        width: 220px;
+        background-color: rgba(0, 0, 0, 0.85);
+        color: #fff;
+        text-align: left;
+        border-radius: 6px;
+        padding: 10px;
+        position: absolute;
+        z-index: 100;
+        bottom: 125%;
+        left: 50%;
+        margin-left: -110px;
+        opacity: 0;
+        transition: opacity 0.3s;
+        font-size: 11px;
+        line-height: 1.4;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+      }}
+      .tooltip-container .tooltip-text::after {{
+        content: "";
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        margin-left: -5px;
+        border-width: 5px;
+        border-style: solid;
+        border-color: rgba(0, 0, 0, 0.85) transparent transparent transparent;
+      }}
+      .tooltip-container:hover .tooltip-text {{
+        visibility: visible;
+        opacity: 1;
+      }}
+      .info-badge {{
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        line-height: 14px;
+        border-radius: 50%;
+        background-color: rgba(255,255,255,0.3);
+        color: white;
+        font-size: 10px;
+        text-align: center;
+        margin-left: 5px;
+        vertical-align: middle;
+      }}
+
+      /* 원격 제어 스위치 크기 키우기 및 Full Width CSS */
+      div[data-testid="stControlItem"] div[role="group"] {{
+          width: 100% !important;
+          padding: 8px 0 !important;
+          display: flex !important;
+          justify-content: space-between !important;
+          align-items: center !important;
+          margin-bottom: 5px !important;
+          border-bottom: 1px solid #F1F5F9; 
+      }}
+      
+      div[data-testid="stControlItem"] label[data-testid="stWidgetLabel"] p {{
+          font-size: 15px !important;
+          font-weight: 700 !important;
+          color: #334155 !important;
+      }}
+      
+      div[data-testid="stControlItem"] input[type="checkbox"][role="switch"] {{
+          transform: scale(1.4) !important;
+          margin-right: 15px !important; 
+          cursor: pointer !important;
+      }}
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -186,10 +259,8 @@ st.markdown(
 
 def kpi(container, label, value, unit="", fmt="{:.2f}"):
     v = "-" if value is None or (isinstance(value, float) and np.isnan(value)) else fmt.format(value)
-    container.markdown(
-        f'<div class="kpi"><div class="l">{label}</div><div><span class="v">{v}</span><span class="u">{unit}</span></div></div>',
-        unsafe_allow_html=True,
-    )
+    html_str = f'<div class="kpi"><div class="l">{label}</div><div><span class="v">{v}</span><span class="u">{unit}</span></div></div>'
+    container.markdown(html_str, unsafe_allow_html=True)
 
 def fmtv(x, nd=2):
     if x is None or (isinstance(x, float) and np.isnan(x)):
@@ -268,25 +339,9 @@ equip_anom_count = int(equip_anom_recent)
 # ----------------------------
 top_l, top_r = st.columns([1.5, 1.5])
 with top_l:
-    st.markdown(
-        """
-        <div class="topbar">
-          <div class="brand">SAMSUNG ELECTRONICS · 공정 모니터링</div>
-          <div class="subtitle">5단계 공정 품질 제어 · 최신 데이터 뷰</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div class="topbar"><div class="brand">SAMSUNG ELECTRONICS · 공정 모니터링</div><div class="subtitle">5단계 공정 품질 제어 · 최신 데이터 뷰</div></div>', unsafe_allow_html=True)
 with top_r:
-    st.markdown(
-        f"""
-        <div class="topbar">
-          <div class="rightmeta" style="font-size:18px;">현재 생산 제품 현황</div>
-          <div class="subtitle rightmeta">진행 순번={t} · 제품 ID={cur["id"]} · 분석 구간={w0}~{t} ({len(hist)}건)</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown(f'<div class="topbar"><div class="rightmeta" style="font-size:18px;">현재 생산 제품 현황</div><div class="subtitle rightmeta">진행 순번={t} · 제품 ID={cur["id"]} · 분석 구간={w0}~{t} ({len(hist)}건)</div></div>', unsafe_allow_html=True)
 
 # ----------------------------
 # KPI row
@@ -305,10 +360,7 @@ st.markdown("")
 left, right = st.columns([2.55, 1.45], gap="medium")
 
 with left:
-    st.markdown('<div class="panel"><div class="pt">공정별 실시간 상태 요약 (SCADA View) <span class="pill">전체 배경 색칠 모드</span></div></div>', unsafe_allow_html=True)
-
-    stage_metric_options = ["[자동] 공정별 가장 위험한 편차"] + [SENSOR_KO.get(m, m) for m in DEV_METRICS]
-    selected_stage_metric = st.selectbox("공정 게이지 모니터링 지표 선택", stage_metric_options)
+    st.markdown('<div class="panel"><div class="pt">공정별 실시간 상태 요약 (SCADA View)</div></div>', unsafe_allow_html=True)
 
     cols = st.columns(len(STAGES), gap="small")
 
@@ -319,62 +371,63 @@ with left:
             if f in df.columns:
                 v = pd.to_numeric(cur.get(f), errors="coerce")
                 score = limit_exceed_score(v, f)
-                over = is_over_limit(v, f)
-                candidates.append(((10.0 if over else 0.0) + score, m))
+                candidates.append((score, m))
         candidates.sort(reverse=True)
         if candidates: return candidates[0][1]
         return DEV_METRICS[0]
 
-    # 🚀 완벽한 SCADA 스타일 카드 렌더링 루프
     for i, s in enumerate(STAGES):
-        if selected_stage_metric == "[자동] 공정별 가장 위험한 편차":
-            target_m = pick_worst_metric_for_stage(s)
-        else:
-            target_m = next(k for k, v in SENSOR_KO.items() if v == selected_stage_metric)
-
+        target_m = pick_worst_metric_for_stage(s)
         target_f = fcol(s, target_m)
         val = pd.to_numeric(cur.get(target_f), errors="coerce")
         metric_ko = SENSOR_KO.get(target_m, target_m)
         
         mu, sd, lcl, ucl = CTRL_LIMITS.get(target_f, (0, 0, 0, 0))
         
-        # 색상 및 상태 판별 (Z-score 기반)
         bg_color = GOOD
-        pct = 0
+        z_score = 0.0
         if pd.notna(val) and sd > 0:
-            z = abs(val - mu) / sd
-            if z >= 3:
+            z_score = abs(val - mu) / sd
+            if z_score >= 3.0:
                 bg_color = BAD
-            elif z >= 2:
+            elif z_score >= 2.0:
                 bg_color = WARN
-            # 4시그마를 100%로 잡고 링(Donut)을 얼마나 채울지 퍼센트 계산
-            pct = min((z / 4.0) * 100, 100)
             
-        val_str = f"{val:.2f}" if pd.notna(val) else "-"
+        val_str = f"{z_score:.1f} σ" if pd.notna(val) and sd > 0 else "-"
 
-        # 🚀 순수 SVG 미니 바 차트 (최근 10건) 생성
         recent_10 = hist[target_f].tail(10).values
-        svg_bars = ""
-        if len(recent_10) > 0:
-            min_v, max_v = np.nanmin(recent_10), np.nanmax(recent_10)
+        svg_line = ""
+        if len(recent_10) > 1:
+            plot_min, plot_max = (lcl, ucl) if np.isfinite(lcl) and np.isfinite(ucl) else (np.nanmin(recent_10), np.nanmax(recent_10))
+            if plot_max == plot_min: 
+                plot_min, plot_max = plot_min - 1, plot_max + 1
+            
+            points = []
             n_vals = len(recent_10)
             for j, v in enumerate(recent_10):
                 if pd.isna(v): continue
-                if max_v == min_v:
-                    norm_h = 15
-                else:
-                    norm_h = max(2, ((v - min_v) / (max_v - min_v)) * 30)
-                
-                # 우측 정렬되도록 x축 계산
-                x = (10 - n_vals + j) * 10 + 1.5
-                y = 30 - norm_h
-                
-                # 3시그마 벗어난 과거 데이터는 하얀색 막대, 정상은 반투명 하얀색으로 깔끔하게
-                bar_color = "#ffffff" if is_over_limit(v, target_f) else "rgba(255,255,255,0.4)"
-                svg_bars += f'<rect x="{x}" y="{y}" width="7" height="{norm_h}" fill="{bar_color}" rx="1" />'
+                x = (j / (n_vals - 1)) * 100
+                y = 30 - (((v - plot_min) / (plot_max - plot_min)) * 30)
+                y = max(0, min(30, y))
+                points.append(f"{x},{y}")
+            
+            polyline_points = " ".join(points)
+            svg_line = f'<polyline points="{polyline_points}" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />'
+            
+            last_x, last_y = points[-1].split(",")
+            svg_line += f'<circle cx="{last_x}" cy="{last_y}" r="2.5" fill="#FCD34D" stroke="white" stroke-width="0.5" />'
+            
+            mu_y = 30 - (((mu - plot_min) / (plot_max - plot_min)) * 30)
+            if 0 <= mu_y <= 30:
+                svg_line += f'<line x1="0" y1="{mu_y}" x2="100" y2="{mu_y}" stroke="rgba(255,255,255,0.4)" stroke-width="1" stroke-dasharray="2,2" />'
 
-        # 🚀 들여쓰기(Indentation) 제거: Streamlit Markdown 파서 오류 방지용 완벽한 한 줄 HTML
-        html_card = f"""<div style="background-color: {bg_color}; border-radius: 12px; padding: 15px; text-align: center; color: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1); height: 210px; display: flex; flex-direction: column; justify-content: space-between;"><div><div style="font-weight: 900; font-size: 16px;">공정 {s}</div><div style="font-size: 13px; opacity: 0.9; margin-bottom: 5px;">{metric_ko}</div></div><div style="flex-grow: 1; display: flex; align-items: center; justify-content: center;"><svg viewBox="0 0 36 36" style="width: 85px; height: 85px; overflow: visible;"><path style="fill:none; stroke:rgba(255,255,255,0.25); stroke-width:3.5;" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" /><path style="fill:none; stroke:#ffffff; stroke-width:3.5; stroke-linecap:round; stroke-dasharray:{pct}, 100;" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" /><text x="18" y="21.5" style="fill:#ffffff; font-size:8.5px; font-weight:bold; text-anchor:middle;">{val_str}</text></svg></div><div style="height: 30px; width: 100%; margin-top: 5px;"><svg width="100%" height="100%" viewBox="0 0 100 30" preserveAspectRatio="none">{svg_bars}</svg></div></div>"""
+        html_card = (
+            f'<div style="background-color: {bg_color}; border-radius: 12px; padding: 15px 15px 10px 15px; text-align: center; color: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1); height: 210px; display: flex; flex-direction: column; justify-content: space-between;">'
+            f'<div><div style="font-weight: 900; font-size: 16px;">공정 {s} <span class="tooltip-container"><span class="info-badge">i</span><span class="tooltip-text"><b>[시그마 이탈도 가이드]</b><br>정상 범위(평균)에서 얼마나 벗어났는지 나타냅니다.<br><br>🟢 정상: 0.0 ~ 2.0 σ<br>🟡 주의: 2.0 ~ 3.0 σ<br>🔴 <b>위험: 3.0 σ 초과</b></span></span></div><div style="font-size: 13px; opacity: 0.9; margin-bottom: 5px;">{metric_ko}</div></div>'
+            f'<div style="flex-grow: 1; display: flex; align-items: center; justify-content: center;"><span style="font-size: 42px; font-weight: 900; letter-spacing: -1px; text-shadow: 1px 1px 2px rgba(0,0,0,0.2); border-bottom: 1px dashed rgba(255,255,255,0.4);">{val_str}</span></div>'
+            f'<div style="width: 100%; text-align: left;"><div style="font-size: 10px; color: rgba(255,255,255,0.8); margin-bottom: 2px;">최근 10건 추이 (원본 수치 기준)</div>'
+            f'<div style="height: 35px; width: 100%;"><svg width="100%" height="100%" viewBox="0 0 100 30" preserveAspectRatio="none" style="overflow: visible;">{svg_line}</svg></div></div></div>'
+        )
 
         with cols[i]:
             st.markdown(html_card, unsafe_allow_html=True)
@@ -384,7 +437,7 @@ with left:
     # ----------------------------
     # Recent Trend 
     # ----------------------------
-    st.markdown('<div class="panel"><div class="pt">Recent Trend <span class="pill">한계선 초과(3σ) 집중 모니터링</span></div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel"><div class="pt">Recent Trend <span class="pill" style="margin-left:8px; display:inline-block; padding:2px 10px; border-radius:999px; background:rgba(20,40,160,0.05); color:#1428A0; font-size:12px; font-weight:800; border:1px solid rgba(20,40,160,0.2);">한계선 초과(3σ) 집중 모니터링</span></div></div>', unsafe_allow_html=True)
 
     def pick_most_critical_feature() -> str:
         scored = []
@@ -478,60 +531,80 @@ with left:
     )
     st.plotly_chart(fig, use_container_width=True)
 
+
 with right:
-    # ----------------------------
-    # Right (1): 8 mini charts 
-    # ----------------------------
-    st.markdown('<div class="panel"><div class="pt">Stage Profile <span class="pill">8개 지표 현황</span></div></div>', unsafe_allow_html=True)
+    # 오른쪽 영역을 좌우로 분할: 차트(비율 2.2) | 스위치(비율 1.0)
+    r_left, r_right = st.columns([2.2, 1.0], gap="medium")
 
-    MINI_METRICS = [
-        "temp",
-        "humidity",
-        "flow_deviation",
-        "density_deviation",
-        "viscosity_deviation",
-        "o2_deviation",
-        "n_deviation",
-        "co2_deviation",
-    ]
-    MINI_METRICS = [m for m in MINI_METRICS if m in METRICS] 
+    with r_left:
+        # ----------------------------
+        # Stage Profile (좌측 배치)
+        # ----------------------------
+        st.markdown('<div class="panel"><div class="pt">Stage Profile <span class="pill" style="margin-left:8px; display:inline-block; padding:2px 10px; border-radius:999px; background:rgba(20,40,160,0.05); color:#1428A0; font-size:12px; font-weight:800; border:1px solid rgba(20,40,160,0.2);">8개 지표 현황</span></div></div>', unsafe_allow_html=True)
 
-    def stage_series_for_metric(metric: str):
-        xs = []
-        ys = []
-        for s in STAGES:
-            f = fcol(s, metric)
-            if f in df.columns:
-                xs.append(s)
-                ys.append(pd.to_numeric(cur.get(f), errors="coerce"))
-            else:
-                xs.append(s)
-                ys.append(np.nan)
-        return xs, ys
+        MINI_METRICS = [
+            "temp", "humidity", "flow_deviation", "density_deviation",
+            "viscosity_deviation", "o2_deviation", "n_deviation", "co2_deviation",
+        ]
+        MINI_METRICS = [m for m in MINI_METRICS if m in METRICS] 
 
-    grid_cols = st.columns(4, gap="small")
-    figs = []
+        def stage_series_for_metric(metric: str):
+            xs = []
+            ys = []
+            for s in STAGES:
+                f = fcol(s, metric)
+                if f in df.columns:
+                    xs.append(s)
+                    ys.append(pd.to_numeric(cur.get(f), errors="coerce"))
+                else:
+                    xs.append(s)
+                    ys.append(np.nan)
+            return xs, ys
 
-    for m in MINI_METRICS[:8]:
-        xs, ys = stage_series_for_metric(m)
-        metric_ko = SENSOR_KO.get(m, m)
+        # 좁아진 공간에 맞춰 차트를 2열로 배치
+        grid_cols = st.columns(2, gap="small")
+        figs = []
 
-        fig_m = go.Figure()
-        fig_m.add_trace(go.Scatter(x=xs, y=ys, mode="lines+markers", name=metric_ko, line=dict(color=SAMSUNG_BLUE_2)))
-        fig_m.update_layout(
-            height=170,
-            margin=dict(l=6, r=6, t=25, b=10),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color=TEXT, size=11),
-            xaxis=dict(title="공정", tickmode="array", tickvals=xs, gridcolor="rgba(0,0,0,0.05)"),
-            yaxis=dict(gridcolor="rgba(0,0,0,0.05)"),
-            showlegend=False,
-            title=dict(text=metric_ko, x=0.02, y=0.98, xanchor="left", yanchor="top"),
-        )
-        figs.append(fig_m)
+        for m in MINI_METRICS[:8]:
+            xs, ys = stage_series_for_metric(m)
+            metric_ko = SENSOR_KO.get(m, m)
 
-    for idx, fig_m in enumerate(figs):
-        col = grid_cols[idx % 4]
-        with col:
-            st.plotly_chart(fig_m, use_container_width=True)
+            fig_m = go.Figure()
+            fig_m.add_trace(go.Scatter(x=xs, y=ys, mode="lines+markers", name=metric_ko, line=dict(color=SAMSUNG_BLUE_2)))
+            fig_m.update_layout(
+                height=130, # 차트 높이 축소
+                margin=dict(l=5, r=5, t=25, b=5),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color=TEXT, size=10),
+                xaxis=dict(tickmode="array", tickvals=xs, gridcolor="rgba(0,0,0,0.05)"),
+                yaxis=dict(gridcolor="rgba(0,0,0,0.05)"),
+                showlegend=False,
+                title=dict(text=metric_ko, x=0, y=1, font_size=11),
+            )
+            figs.append(fig_m)
+
+        for idx, fig_m in enumerate(figs):
+            with grid_cols[idx % 2]:
+                st.plotly_chart(fig_m, use_container_width=True)
+
+    with r_right:
+        # ----------------------------
+        # Remote Control (우측 배치)
+        # ----------------------------
+        st.markdown('<div class="panel"><div class="pt" style="font-size:14px;">Remote Control <br><span style="display:inline-block; margin-top:4px; padding:2px 10px; border-radius:999px; background:#EEF2FF; color:#4338CA; font-size:12px; font-weight:800; border:1px solid rgba(67,56,202,0.2);">설비 원격 제어</span></div></div>', unsafe_allow_html=True)
+        
+        st.markdown('<div style="margin-top:10px;"></div>', unsafe_allow_html=True)
+        
+        # CSS 스타일링이 적용된 스위치 배치 (Full Width, No Lines, Large Size)
+        st.toggle("냉각기 (Chiller)", value=True, key="c_chiller")
+        st.toggle("가습기 (Humidifier)", value=True, key="c_humid")
+        st.toggle("메인 펌프 (Pump)", value=True, key="c_pump")
+        st.toggle("진공 배기 (Vacuum)", value=False, key="c_vac")
+        st.toggle("N2 퍼지 밸브", value=True, key="c_n2")
+        st.toggle("CO2 버블러", value=True, key="c_co2")
+        st.toggle("희석수 밸브", value=False, key="c_diw")
+        st.toggle("비상 정지 (EMG)", value=False, key="c_emg")
+
+        if st.session_state.c_emg:
+            st.markdown('<div style="color:#DC2626; font-weight:900; font-size:16px; margin-top:10px;">[비상] 가동 중단됨</div>', unsafe_allow_html=True)
