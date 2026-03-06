@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -12,6 +13,8 @@ import time
 # - 알람 개별 분리 & 버튼 증발 버그 완벽 해결 (과거 미조치 내역 추적)
 # - Recent Trend 오토 포커스(Auto-Focus) & 연쇄 처리완료 완벽 연동
 # - 5대 KPI 재배치 (OEE - 미조치 설비이상 - 총생산 - 불량수 - 불량률)
+# - 8개 프로파일 차트: Y축 스케일 확장 및 초과 방지 동적 스케일링 적용
+# - 우측 하단 장비 이미지(Equipment View) 동적 연동 추가
 # - 실시간 데이터 시뮬레이터 (9초 단위 확정적 알람 주입, 변동성 극대화)
 # =========================================================
 
@@ -58,15 +61,16 @@ STAGE_NAMES = {
     5: ("FRD-05", "Final Rinse & Dry")
 }
 
+# Y축 스케일 대폭 확장 (폭주 데이터 대비)
 AXIS_SPEC = {
-    "temp": (25, 35, 30),
-    "humidity": (60, 80, 70),
-    "flow_deviation": (-10, 10, 0),
-    "density_deviation": (-10, 10, 0),
-    "viscosity_deviation": (-10, 10, 0),
-    "co2_deviation": (-10, 10, 0),
-    "o2_deviation": (-5, 5, 0),
-    "n_deviation": (-5, 5, 0),
+    "temp": (15, 45, 30),
+    "humidity": (40, 100, 70),
+    "flow_deviation": (-30, 30, 0),
+    "density_deviation": (-30, 30, 0),
+    "viscosity_deviation": (-30, 30, 0),
+    "co2_deviation": (-30, 30, 0),
+    "o2_deviation": (-15, 15, 0),
+    "n_deviation": (-15, 15, 0),
 }
 
 SENSOR_KO = {
@@ -281,7 +285,7 @@ def limit_exceed_score(val, feature: str) -> float:
         return 0.0
     return abs((float(val) - mu) / sd)
 
-# 상세 알람 리스트 추출 (최근 120건 내 발생한 모든 알람)
+# 상세 알람 리스트 추출 
 anomaly_list = []
 for _, r in hist.iterrows():
     r_val = int(r["run"])
@@ -305,13 +309,11 @@ resolved_alarms = [a for a in anomaly_list if a["uid"] in st.session_state.resol
 active_anom_count = len(active_alarms)
 
 # ----------------------------
-# 🚀 오토 포커스 (Auto-Targeting) & 버튼 동기화 핵심 로직
+# 오토 포커스 (Auto-Targeting) & 버튼 동기화 핵심 로직
 # ----------------------------
-# 1. 처리완료를 누른 직후라면, 미조치 알람 중 가장 위험한 곳으로 강제 이동
 if st.session_state.get("force_auto_target", False):
     if active_alarms:
         worst_uid = active_alarms[0]["uid"]
-        # uid 형태: alarm_16900_stage2_temp -> 분리하여 필터용 변수 획득
         fcol_str = worst_uid.split("_", 2)[2] 
         stage_part, metric_part = fcol_str.split("_", 1)
         st.session_state.trend_stage = int(stage_part.replace("stage", ""))
@@ -462,7 +464,7 @@ kpi(k5, "불량 비율", defect_rate * 100 if np.isfinite(defect_rate) else np.n
 st.markdown("")
 
 # ----------------------------
-# Main layout (카드 렌더링)
+# Main layout
 # ----------------------------
 left, right = st.columns([2.55, 1.45], gap="medium")
 
@@ -536,7 +538,7 @@ with left:
     st.markdown("")
 
     # ----------------------------
-    # Recent Trend (Auto-Target & 버그 없는 버튼 렌더링)
+    # Recent Trend (Auto-Target)
     # ----------------------------
     filter_col1, filter_col2 = st.columns(2)
     with filter_col1:
@@ -546,7 +548,6 @@ with left:
     
     trend_feature = fcol(st.session_state.trend_stage, st.session_state.trend_metric)
     
-    # 🚀 현재 선택된 지표에 대해 '미조치 알람'이 단 하나라도 남아있는지 철저히 스캔
     feature_active_uids = [a["uid"] for a in active_alarms if a["uid"].endswith(f"_{trend_feature}")]
     is_active_in_trend = len(feature_active_uids) > 0
 
@@ -563,7 +564,6 @@ with left:
             div[data-testid="stButton"] button:hover { background-color: #059669; color: white; }
             </style>""", unsafe_allow_html=True)
             
-            # 버튼 클릭 시 해당 지표의 '모든' 미조치 알람을 한 번에 해결하고 다음 타겟으로 이동
             if st.button("현재 지표 처리완료", key="btn_trend_resolve", use_container_width=True):
                 for uid in feature_active_uids:
                     st.session_state.resolved_alarms.add(uid)
@@ -583,30 +583,20 @@ with left:
 
     if np.isfinite(lcl) and np.isfinite(ucl):
         out_of_control = plot[(plot[trend_feature] > ucl) | (plot[trend_feature] < lcl)]
-        if not out_of_control.empty:
-            fig.add_trace(
-                go.Scatter(
-                    x=out_of_control["run"],
-                    y=out_of_control[trend_feature],
-                    mode="markers",
-                    name="한계선(3σ) 이탈",
-                    marker=dict(size=10, color=BAD, symbol="circle-open", line=dict(width=2)),
-                )
-            )
+        
+        active_run_vals = [a["run"] for a in active_alarms if a["uid"].endswith(f"_{trend_feature}")]
+        
+        active_points = out_of_control[out_of_control["run"].isin(active_run_vals)]
+        resolved_points = out_of_control[~out_of_control["run"].isin(active_run_vals)]
+        
+        if not active_points.empty:
+            fig.add_trace(go.Scatter(x=active_points["run"], y=active_points[trend_feature], mode="markers", name="미조치 위험(3σ)", marker=dict(size=11, color=BAD, symbol="circle-open", line=dict(width=2.5))))
+        if not resolved_points.empty:
+            fig.add_trace(go.Scatter(x=resolved_points["run"], y=resolved_points[trend_feature], mode="markers", name="조치 완료 이력", marker=dict(size=9, color=RESOLVED_GRAY, symbol="circle-open", line=dict(width=1.5))))
 
     if t in set(plot["run"]):
         ycur = float(plot.loc[plot["run"] == t, trend_feature].iloc[0])
-        fig.add_trace(
-            go.Scatter(
-                x=[t],
-                y=[ycur],
-                mode="markers+text",
-                name="현재 위치",
-                text=["현재 제품"],
-                textposition="top center",
-                marker=dict(size=12, symbol="diamond", color=WARN),
-            )
-        )
+        fig.add_trace(go.Scatter(x=[t], y=[ycur], mode="markers+text", name="현재 위치", text=["현재 제품"], textposition="top center", marker=dict(size=12, symbol="diamond", color=WARN)))
 
     if np.isfinite(lcl) and np.isfinite(ucl):
         fig.add_hline(y=ucl, line_dash="dot", line_color=BAD, annotation_text=f"UCL (+3σ): {ucl:.2f}", annotation_font_color=BAD)
@@ -627,7 +617,7 @@ with left:
 
 with right:
     # ----------------------------
-    # Stage Profile 
+    # Stage Profile (동적 스케일 확장)
     # ----------------------------
     st.markdown('<div class="panel"><div class="pt">Stage Profile <span class="pill" style="margin-left:8px; display:inline-block; padding:2px 10px; border-radius:999px; background:rgba(20,40,160,0.05); color:#1428A0; font-size:12px; font-weight:800; border:1px solid rgba(20,40,160,0.2);">8개 지표 현황</span></div></div>', unsafe_allow_html=True)
 
@@ -679,7 +669,13 @@ with right:
         )
         
         if y_min is not None and y_max is not None:
-            layout_dict["yaxis"] = dict(range=[y_min, y_max], gridcolor="rgba(0,0,0,0.05)", zeroline=False)
+            plot_min, plot_max = y_min, y_max
+            if not np.isnan(ys).all():
+                cur_min, cur_max = np.nanmin(ys), np.nanmax(ys)
+                if cur_min < plot_min: plot_min = cur_min - abs(cur_min) * 0.1 - 1
+                if cur_max > plot_max: plot_max = cur_max + abs(cur_max) * 0.1 + 1
+                
+            layout_dict["yaxis"] = dict(range=[plot_min, plot_max], gridcolor="rgba(0,0,0,0.05)", zeroline=False)
         else:
             layout_dict["yaxis"] = dict(gridcolor="rgba(0,0,0,0.05)")
 
@@ -690,8 +686,34 @@ with right:
         with grid_cols[idx % 4]:
             st.plotly_chart(fig_m, use_container_width=True)
 
+    # ----------------------------
+    # Equipment View (동적 이미지 연동)
+    # ----------------------------
+    st.markdown('<div style="margin-top: 20px;"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel"><div class="pt">Equipment View <span class="pill" style="margin-left:8px; display:inline-block; padding:2px 10px; border-radius:999px; background:rgba(20,40,160,0.05); color:#1428A0; font-size:12px; font-weight:800; border:1px solid rgba(20,40,160,0.2);">실시간 설비 연동</span></div></div>', unsafe_allow_html=True)
+
+    curr_view_stage = st.session_state.get("trend_stage", 1)
+
+    # 공정별 맞춤 이미지 검색, 없으면 기본 image1로 폴백(Fallback) 방어 처리
+    img_png = f"images/image{curr_view_stage}.png"
+    img_jpg = f"images/image{curr_view_stage}.jpg"
+    base_png = "images/image1.png"
+    base_jpg = "images/image1.jpg"
+
+    target_img = None
+    if os.path.exists(img_png): target_img = img_png
+    elif os.path.exists(img_jpg): target_img = img_jpg
+    elif os.path.exists(base_png): target_img = base_png
+    elif os.path.exists(base_jpg): target_img = base_jpg
+
+    if target_img:
+        st.image(target_img, use_container_width=True)
+    else:
+        st.info("장비 이미지를 불러올 수 없습니다. 작업 중인 폴더 내 'images' 폴더에 'image1.png' 또는 'image1.jpg' 파일이 있는지 확인하세요.")
+
+
 # ----------------------------
-# 🚀 실시간 데이터 시뮬레이터 (다이내믹 변동 로직)
+# 실시간 데이터 시뮬레이터
 # ----------------------------
 if st.session_state.get("sim_toggle", False):
     time.sleep(3)
@@ -704,7 +726,6 @@ if st.session_state.get("sim_toggle", False):
     new_row['id'] = f"PRD-SIM-{new_run:04d}" 
     new_row['label'] = 0 
     
-    # 3사이클(약 9초)마다 100% 확률로 하나의 랜덤 센서를 확정적으로 폭주시킴
     force_spike_feature = None
     if new_run % 3 == 0:
         force_spike_feature = np.random.choice(FEATURE_COLS)
@@ -714,14 +735,12 @@ if st.session_state.get("sim_toggle", False):
         if pd.notna(v):
             mu, sd, lcl, ucl = CTRL_LIMITS.get(c, (v, 1.0, v-3, v+3))
             
-            # 이전보다 노이즈 폭을 넓혀서 생동감 부여
-            noise = np.random.normal(0, max(sd * 0.6, 0.1))
+            noise = np.random.normal(0, max(sd * 0.8, 0.1))
             pull = (mu - v) * 0.1 
             
             spike = 0
             if c == force_spike_feature:
-                # 강제 폭주 트리거 발생 (4.0 ~ 7.0 시그마 밖으로 튕겨냄)
-                spike = np.random.choice([1, -1]) * np.random.uniform(4.0, 7.0) * max(sd, 0.5)
+                spike = np.random.choice([1, -1]) * np.random.uniform(4.0, 6.0) * max(sd, 0.5)
             
             new_row[c] = v + pull + noise + spike
             
