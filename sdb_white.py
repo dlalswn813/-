@@ -321,46 +321,37 @@ if st.session_state.get("force_auto_target", False):
     st.session_state.force_auto_target = False
 
 # ----------------------------
-# 카드용 데이터 구조 (우선순위 자동 정렬)
+# 카드용 데이터 구조 (미조치 이상 설비만 표시)
 # ----------------------------
 stage_data = []
 
 for s in STAGES:
     worst_unresolved_z, worst_unresolved_m, worst_unresolved_v = -1, None, np.nan
-    worst_resolved_z, worst_resolved_m, worst_resolved_v = -1, None, np.nan
-    worst_normal_z, worst_normal_m, worst_normal_v = -1, METRICS[0], np.nan
-    
+
     for m in METRICS:
         f = fcol(s, m)
         if f in df.columns:
             v = pd.to_numeric(cur.get(f), errors="coerce")
             z = limit_exceed_score(v, f)
             uid = f"alarm_{run_val}_{f}"
-            
-            if z >= 3.0:
-                if uid in st.session_state.resolved_alarms:
-                    if z > worst_resolved_z:
-                        worst_resolved_z, worst_resolved_m, worst_resolved_v = z, m, v
-                else:
-                    if z > worst_unresolved_z:
-                        worst_unresolved_z, worst_unresolved_m, worst_unresolved_v = z, m, v
-            else:
-                if z > worst_normal_z:
-                    worst_normal_z, worst_normal_m, worst_normal_v = z, m, v
 
+            # 현재 시점 기준 미조치 이상만 카드 후보로 포함
+            if z >= 3.0 and uid not in st.session_state.resolved_alarms:
+                if z > worst_unresolved_z:
+                    worst_unresolved_z, worst_unresolved_m, worst_unresolved_v = z, m, v
+
+    # 미조치 이상이 있는 stage만 추가
     if worst_unresolved_z >= 3.0:
-        stage_data.append({"stage": s, "metric": worst_unresolved_m, "val": worst_unresolved_v, "z": worst_unresolved_z, "state": "active"})
-    elif worst_resolved_z >= 3.0:
-        stage_data.append({"stage": s, "metric": worst_resolved_m, "val": worst_resolved_v, "z": worst_resolved_z, "state": "resolved"})
-    else:
-        stage_data.append({"stage": s, "metric": worst_normal_m, "val": worst_normal_v, "z": worst_normal_z, "state": "normal"})
+        stage_data.append({
+            "stage": s,
+            "metric": worst_unresolved_m,
+            "val": worst_unresolved_v,
+            "z": worst_unresolved_z,
+            "state": "active",
+        })
 
-def state_priority(state):
-    if state == "active": return 3
-    if state == "resolved": return 2
-    return 1
-
-stage_data.sort(key=lambda x: (state_priority(x["state"]), x["z"]), reverse=True)
+# 위험도 순 정렬
+stage_data.sort(key=lambda x: x["z"], reverse=True)
 
 # ----------------------------
 # KPI 데이터 준비 및 OEE
@@ -471,58 +462,59 @@ left, right = st.columns([2.55, 1.45], gap="medium")
 with left:
     st.markdown('<div class="panel"><div class="pt">공정별 실시간 상태 요약 (SCADA View) <span class="pill" style="margin-left:8px; display:inline-block; padding:2px 10px; border-radius:999px; background:rgba(220,38,38,0.1); color:#DC2626; font-size:12px; font-weight:800; border:1px solid rgba(220,38,38,0.3);">우선순위 자동정렬</span></div></div>', unsafe_allow_html=True)
 
-    cols = st.columns(len(stage_data), gap="small")
+    if stage_data:
+        cols = st.columns(len(stage_data), gap="small")
 
-    for i, s_info in enumerate(stage_data):
-        s = s_info["stage"]
-        target_m = s_info["metric"]
-        target_f = fcol(s, target_m)
-        val = s_info["val"]
-        state = s_info["state"]
-        z_score = s_info["z"]
-        
-        metric_ko = SENSOR_KO.get(target_m, target_m)
-        eq_code, eq_desc = STAGE_NAMES.get(s, (f"ST-{s}", f"공정 {s}"))
-        
-        mu, sd, lcl, ucl = CTRL_LIMITS.get(target_f, (0, 0, 0, 0))
-        
-        if state == "active":
-            bg_color = BAD if z_score >= 3.5 else WARN
-        elif state == "resolved":
-            bg_color = RESOLVED_GRAY
-        else:
-            bg_color = GOOD
+        for i, s_info in enumerate(stage_data):
+            s = s_info["stage"]
+            target_m = s_info["metric"]
+            target_f = fcol(s, target_m)
+            val = s_info["val"]
+            state = s_info["state"]
+            z_score = s_info["z"]
+            
+            metric_ko = SENSOR_KO.get(target_m, target_m)
+            eq_code, eq_desc = STAGE_NAMES.get(s, (f"ST-{s}", f"공정 {s}"))
+            
+            mu, sd, lcl, ucl = CTRL_LIMITS.get(target_f, (0, 0, 0, 0))
+            
+            if state == "active":
+                bg_color = BAD if z_score >= 3.5 else WARN
+            else:
+                bg_color = GOOD
 
-        val_str = f"{val:.2f}" if pd.notna(val) else "-"
-        lcl_str = f"{lcl:.2f}" if pd.notna(lcl) and np.isfinite(lcl) else "-"
-        ucl_str = f"{ucl:.2f}" if pd.notna(ucl) and np.isfinite(ucl) else "-"
+            val_str = f"{val:.2f}" if pd.notna(val) else "-"
+            lcl_str = f"{lcl:.2f}" if pd.notna(lcl) and np.isfinite(lcl) else "-"
+            ucl_str = f"{ucl:.2f}" if pd.notna(ucl) and np.isfinite(ucl) else "-"
 
-        html_card = (
-            f'<div style="background-color: {bg_color}; border-radius: 12px; padding: 15px 15px 12px 15px; text-align: center; color: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1); height: 210px; display: flex; flex-direction: column; justify-content: space-between;">'
-            f'<div>'
-            f'  <div style="font-weight: 900; font-size: 16px; margin-bottom: 0px; letter-spacing: 0.5px; line-height: 1.1;">{eq_code}</div>'
-            f'  <div style="font-size: 10px; opacity: 0.85; margin-bottom: 2px; line-height: 1.1;">{eq_desc}</div>'
-            f'  <div style="font-size: 25px; font-weight: 700; opacity: 1.0; line-height: 1.1;">{metric_ko}</div>'
-            f'</div>'
+            html_card = (
+                f'<div style="background-color: {bg_color}; border-radius: 12px; padding: 15px 15px 12px 15px; text-align: center; color: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1); height: 210px; display: flex; flex-direction: column; justify-content: space-between;">'
+                f'<div>'
+                f'  <div style="font-weight: 900; font-size: 16px; margin-bottom: 0px; letter-spacing: 0.5px; line-height: 1.1;">{eq_code}</div>'
+                f'  <div style="font-size: 10px; opacity: 0.85; margin-bottom: 2px; line-height: 1.1;">{eq_desc}</div>'
+                f'  <div style="font-size: 25px; font-weight: 700; opacity: 1.0; line-height: 1.1;">{metric_ko}</div>'
+                f'</div>'
 
-            f'<div style="flex-grow: 1; display: flex; align-items: center; justify-content: center; padding: 4px 0 2px 0;">'
-            f'  <span style="font-size: 32px; font-weight: 900; letter-spacing: -1px; line-height: 1; text-shadow: 1px 1px 2px rgba(0,0,0,0.2);">{val_str}</span>'
-            f'</div>'
+                f'<div style="flex-grow: 1; display: flex; align-items: center; justify-content: center; padding: 4px 0 2px 0;">'
+                f'  <span style="font-size: 32px; font-weight: 900; letter-spacing: -1px; line-height: 1; text-shadow: 1px 1px 2px rgba(0,0,0,0.2);">{val_str}</span>'
+                f'</div>'
 
-            f'<div style="width: 100%; text-align: left; background: rgba(255,255,255,0.12); border-radius: 10px; padding: 7px 10px;">'
-            f'  <div style="font-size: 10px; color: rgba(255,255,255,0.85); font-weight: 700; margin-bottom: 4px; line-height: 1;">관리 기준 범위</div>'
-            f'  <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: 800; line-height: 1.1;">'
-            f'    <span>LCL</span><span>{lcl_str}</span>'
-            f'  </div>'
-            f'  <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: 800; margin-top: 2px; line-height: 1.1;">'
-            f'    <span>UCL</span><span>{ucl_str}</span>'
-            f'  </div>'
-            f'</div>'
-            f'</div>'
-        )
+                f'<div style="width: 100%; text-align: left; background: rgba(255,255,255,0.12); border-radius: 10px; padding: 7px 10px;">'
+                f'  <div style="font-size: 10px; color: rgba(255,255,255,0.85); font-weight: 700; margin-bottom: 4px; line-height: 1;">관리 기준 범위</div>'
+                f'  <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: 800; line-height: 1.1;">'
+                f'    <span>LCL</span><span>{lcl_str}</span>'
+                f'  </div>'
+                f'  <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: 800; margin-top: 2px; line-height: 1.1;">'
+                f'    <span>UCL</span><span>{ucl_str}</span>'
+                f'  </div>'
+                f'</div>'
+                f'</div>'
+            )
 
-        with cols[i]:
-            st.markdown(html_card, unsafe_allow_html=True)
+            with cols[i]:
+                st.markdown(html_card, unsafe_allow_html=True)
+    else:
+        st.info("현재 미조치 위험/주의 알람이 있는 설비가 없습니다.")
 
     st.markdown("")
 
