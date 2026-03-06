@@ -492,44 +492,33 @@ with left:
             bg_color = RESOLVED_GRAY
         else:
             bg_color = GOOD
-            
-        val_str = f"{z_score:.1f} σ" if pd.notna(z_score) and z_score >= 0 else "-"
-        val_display = f"{val:.2f}" if pd.notna(val) else "-"
 
-        recent_10 = hist[target_f].tail(10).values
-        svg_line = ""
-        if len(recent_10) > 1:
-            plot_min, plot_max = (lcl, ucl) if np.isfinite(lcl) and np.isfinite(ucl) else (np.nanmin(recent_10), np.nanmax(recent_10))
-            if plot_max == plot_min: 
-                plot_min, plot_max = plot_min - 1, plot_max + 1
-            
-            points = []
-            n_vals = len(recent_10)
-            for j, v in enumerate(recent_10):
-                if pd.isna(v): continue
-                x = (j / (n_vals - 1)) * 100
-                y = 30 - (((v - plot_min) / (plot_max - plot_min)) * 30)
-                y = max(0, min(30, y))
-                points.append(f"{x},{y}")
-            
-            polyline_points = " ".join(points)
-            svg_line = f'<polyline points="{polyline_points}" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />'
-            
-            last_x, last_y = points[-1].split(",")
-            svg_line += f'<circle cx="{last_x}" cy="{last_y}" r="2.5" fill="#FCD34D" stroke="white" stroke-width="0.5" />'
-            
-            mu_y = 30 - (((mu - plot_min) / (plot_max - plot_min)) * 30)
-            if 0 <= mu_y <= 30:
-                svg_line += f'<line x1="0" y1="{mu_y}" x2="100" y2="{mu_y}" stroke="rgba(255,255,255,0.4)" stroke-width="1" stroke-dasharray="2,2" />'
+        val_str = f"{val:.2f}" if pd.notna(val) else "-"
+        lcl_str = f"{lcl:.2f}" if pd.notna(lcl) and np.isfinite(lcl) else "-"
+        ucl_str = f"{ucl:.2f}" if pd.notna(ucl) and np.isfinite(ucl) else "-"
 
         html_card = (
-            f'<div style="background-color: {bg_color}; border-radius: 12px; padding: 15px 15px 10px 15px; text-align: center; color: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1); height: 210px; display: flex; flex-direction: column; justify-content: space-between;">'
-            f'<div><div style="font-weight: 900; font-size: 16px; margin-bottom: 0px; letter-spacing: 0.5px;">{eq_code} <span class="tooltip-container"><span class="info-badge">i</span><span class="tooltip-text"><b>[시그마 이탈도 가이드]</b><br>정상 범위(평균)에서 얼마나 벗어났는지 나타냅니다.<br><br>🟢 정상: 0.0 ~ 3.0 σ<br>🟡 주의: 3.0 ~ 3.5 σ<br>🔴 <b>위험: 3.5 σ 초과</b></span></span></div>'
-            f'<div style="font-size: 11px; opacity: 0.8; margin-bottom: 4px;">{eq_desc}</div>'
-            f'<div style="font-size: 13px; font-weight: 700; opacity: 1.0;">{metric_ko}</div></div>'
-            f'<div style="flex-grow: 1; display: flex; align-items: center; justify-content: center;"><span style="font-size: 42px; font-weight: 900; letter-spacing: -1px; text-shadow: 1px 1px 2px rgba(0,0,0,0.2); border-bottom: 1px dashed rgba(255,255,255,0.4);">{val_str}</span></div>'
-            f'<div style="width: 100%; text-align: left;"><div style="font-size: 10px; color: rgba(255,255,255,0.8); margin-bottom: 2px;">최근 10건 추이</div>'
-            f'<div style="height: 35px; width: 100%;"><svg width="100%" height="100%" viewBox="0 0 100 30" preserveAspectRatio="none" style="overflow: visible;">{svg_line}</svg></div></div></div>'
+            f'<div style="background-color: {bg_color}; border-radius: 12px; padding: 15px 15px 12px 15px; text-align: center; color: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1); height: 210px; display: flex; flex-direction: column; justify-content: space-between;">'
+            f'<div>'
+            f'  <div style="font-weight: 900; font-size: 16px; margin-bottom: 0px; letter-spacing: 0.5px; line-height: 1.1;">{eq_code}</div>'
+            f'  <div style="font-size: 10px; opacity: 0.85; margin-bottom: 2px; line-height: 1.1;">{eq_desc}</div>'
+            f'  <div style="font-size: 25px; font-weight: 700; opacity: 1.0; line-height: 1.1;">{metric_ko}</div>'
+            f'</div>'
+
+            f'<div style="flex-grow: 1; display: flex; align-items: center; justify-content: center; padding: 4px 0 2px 0;">'
+            f'  <span style="font-size: 32px; font-weight: 900; letter-spacing: -1px; line-height: 1; text-shadow: 1px 1px 2px rgba(0,0,0,0.2);">{val_str}</span>'
+            f'</div>'
+
+            f'<div style="width: 100%; text-align: left; background: rgba(255,255,255,0.12); border-radius: 10px; padding: 7px 10px;">'
+            f'  <div style="font-size: 10px; color: rgba(255,255,255,0.85); font-weight: 700; margin-bottom: 4px; line-height: 1;">관리 기준 범위</div>'
+            f'  <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: 800; line-height: 1.1;">'
+            f'    <span>LCL</span><span>{lcl_str}</span>'
+            f'  </div>'
+            f'  <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: 800; margin-top: 2px; line-height: 1.1;">'
+            f'    <span>UCL</span><span>{ucl_str}</span>'
+            f'  </div>'
+            f'</div>'
+            f'</div>'
         )
 
         with cols[i]:
@@ -687,29 +676,25 @@ with right:
             st.plotly_chart(fig_m, use_container_width=True)
 
     # ----------------------------
-    # Equipment View (동적 이미지 연동)
+    # Equipment View
     # ----------------------------
     st.markdown('<div style="margin-top: 20px;"></div>', unsafe_allow_html=True)
     st.markdown('<div class="panel"><div class="pt">Equipment View <span class="pill" style="margin-left:8px; display:inline-block; padding:2px 10px; border-radius:999px; background:rgba(20,40,160,0.05); color:#1428A0; font-size:12px; font-weight:800; border:1px solid rgba(20,40,160,0.2);">실시간 설비 연동</span></div></div>', unsafe_allow_html=True)
 
-    curr_view_stage = st.session_state.get("trend_stage", 1)
-
-    # 공정별 맞춤 이미지 검색, 없으면 기본 image1로 폴백(Fallback) 방어 처리
-    img_png = f"images/image{curr_view_stage}.png"
-    img_jpg = f"images/image{curr_view_stage}.jpg"
-    base_png = "images/image1.png"
-    base_jpg = "images/image1.jpg"
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    img_png = os.path.join(base_dir, "image1.png")
+    img_jpg = os.path.join(base_dir, "image1.jpg")
 
     target_img = None
-    if os.path.exists(img_png): target_img = img_png
-    elif os.path.exists(img_jpg): target_img = img_jpg
-    elif os.path.exists(base_png): target_img = base_png
-    elif os.path.exists(base_jpg): target_img = base_jpg
+    if os.path.exists(img_png):
+        target_img = img_png
+    elif os.path.exists(img_jpg):
+        target_img = img_jpg
 
-    if target_img:
+    if target_img is not None:
         st.image(target_img, use_container_width=True)
     else:
-        st.info("장비 이미지를 불러올 수 없습니다. 작업 중인 폴더 내 'images' 폴더에 'image1.png' 또는 'image1.jpg' 파일이 있는지 확인하세요.")
+        st.info("현재 코드 파일과 같은 폴더에 'image1.png' 또는 'image1.jpg' 파일이 있는지 확인하세요.")
 
 
 # ----------------------------
