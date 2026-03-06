@@ -499,21 +499,13 @@ with top_r:
             
             for a in active_alarms:
                 with st.container():
-                    c_text, c_btn1, c_btn2 = st.columns([3.6, 0.6, 1.3])
+                    c_text, c_btn1 = st.columns([9, 1])
                     with c_text:
-                        st.error(f"[위험도: {a['severity']:.1f}σ] 순번 {a['run']}\n\n{a['details']}")
+                        st.error(f"**[{a['severity']:.1f}sigma]** 순번 {a['run']} : {a['details']}")
                     with c_btn1:
                         st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True) 
                         if st.button("🔍", key=f"btn_inv_{a['uid']}", use_container_width=True):
                             st.session_state.investigate_target = a
-                            st.rerun()
-                    with c_btn2:
-                        st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
-                        if st.button("처리완료", key=f"btn_pop_{a['uid']}", use_container_width=True):
-                            st.session_state.resolved_alarms.add(a['uid'])
-                            if st.session_state.investigate_target and st.session_state.investigate_target["uid"] == a['uid']:
-                                st.session_state.investigate_target = None
-                            st.session_state.force_auto_target = True
                             st.rerun()
             
             if resolved_alarms:
@@ -522,7 +514,7 @@ with top_r:
                 for a in resolved_alarms:
                     st.markdown(f'''
                     <div style="background-color: #F9FAFB; color: #9CA3AF; padding: 10px; border-radius: 8px; margin-bottom: 8px; border: 1px solid #E5E7EB; font-size: 14px;">
-                        <del><b>[조치완료] 순번 {a['run']} (ID: {a['id']})</b><br>{a['details']}</del>
+                        <del><b>[완료] 순번 {a['run']}</b> : {a['details']} ({a['severity']:.1f}σ)</del>
                     </div>
                     ''', unsafe_allow_html=True)
 
@@ -741,14 +733,40 @@ with right:
             fig_m.add_hline(y=target_val, line_dash="dash", line_color="#10B981", line_width=1.5, opacity=0.7)
 
         layout_dict = dict(
-            height=170,
-            margin=dict(l=5, r=5, t=25, b=5),
+            height=185, 
+            margin=dict(l=40, r=10, t=35, b=40), 
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color=TEXT, size=10),
-            xaxis=dict(tickmode="array", tickvals=x_labels, gridcolor="rgba(0,0,0,0.05)", title_font=dict(size=9)),
+            
+            # [수정 핵심] yaxis에 domain을 추가해서 그래프 천장을 낮춥니다.
+            yaxis=dict(
+                # 기존에 정의된 range 등 설정은 그대로 유지됩니다.
+                gridcolor="rgba(0,0,0,0.05)",
+                zeroline=False,
+                tickfont=dict(size=9),
+                # 전체 높이를 1로 봤을 때 0.8까지만 그래프를 그리게 제한합니다.
+                # 상단 20% 공간이 강제로 비워져서 제목과 절대 겹치지 않습니다.
+                domain=[0, 0.8] 
+            ),
+            
+            xaxis=dict(
+                tickmode="array", 
+                tickvals=x_labels, 
+                tickangle=-45,
+                gridcolor="rgba(0,0,0,0.05)", 
+                tickfont=dict(size=9)
+            ),
+            
             showlegend=False,
-            title=dict(text=metric_ko, x=0, y=1, font_size=12),
+            # 제목 위치를 비워둔 20% 공간 안으로 배치합니다.
+            title=dict(
+                text=f"<b>{metric_ko}</b>", 
+                x=0, 
+                y=0.95, 
+                yanchor='top', 
+                font_size=12
+            ),
         )
         
         if y_min is not None and y_max is not None:
