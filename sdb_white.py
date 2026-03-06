@@ -421,16 +421,9 @@ with top_r:
                 st.info("최근 감지된 설비 이상이 없습니다.")
             
             for a in active_alarms:
+            # columns 없이 단일 컨테이너(c1 역할)만 사용
                 with st.container():
-                    c_text, c_btn = st.columns([3, 1])
-                    with c_text:
-                        st.error(f"[위험도: {a['severity']:.1f}σ] 순번 {a['run']}\n\n{a['details']}")
-                    with c_btn:
-                        st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True) 
-                        if st.button("처리완료", key=f"btn_pop_{a['uid']}", use_container_width=True):
-                            st.session_state.resolved_alarms.add(a['uid'])
-                            st.session_state.force_auto_target = True
-                            st.rerun()
+                    st.error(f"**[{a['severity']:.1f}σ]** 순번 {a['run']} : {a['details']}")
             
             if resolved_alarms:
                 st.markdown("<hr style='margin: 15px 0 10px 0; border-color: #E5E7EB;'>", unsafe_allow_html=True)
@@ -438,7 +431,7 @@ with top_r:
                 for a in resolved_alarms:
                     st.markdown(f'''
                     <div style="background-color: #F9FAFB; color: #9CA3AF; padding: 10px; border-radius: 8px; margin-bottom: 8px; border: 1px solid #E5E7EB; font-size: 14px;">
-                        <del><b>[조치완료] 순번 {a['run']} (ID: {a['id']})</b><br>{a['details']}</del>
+                        <del><b>[완료] 순번 {a['run']}</b> : {a['details']} ({a['severity']:.1f}σ)</del>
                     </div>
                     ''', unsafe_allow_html=True)
 
