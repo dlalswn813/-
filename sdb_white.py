@@ -10,12 +10,14 @@ import time
 # Process Monitor (Latest) + Control-Limit Anomaly
 # - 사후 분석용 메인 대시보드 (1페이지)
 # - Stage Snapshot: 위험도 순 자동 정렬 (Priority Queue 완벽 구현)
-# - 알람 개별 분리 & 버튼 증발 버그 완벽 해결 (과거 미조치 내역 추적)
-# - Recent Trend 오토 포커스(Auto-Focus) & 연쇄 처리완료 완벽 연동
+# - 알람 개별 분리 & 버튼 증발 버그 완벽 해결
+# - 🚀 팝오버 상단 통합 툴팁 & 개별 [🔍] 포커싱 버튼 적용
+# - 🚀 Recent Trend: 최신 알람 자동 추적 + '분석 대상' 마커 동시 지원
+# - 🚀 필터 제거 및 동적 상태 표시줄(Indicator) 도입
 # - 5대 KPI 재배치 (OEE - 미조치 설비이상 - 총생산 - 불량수 - 불량률)
-# - 8개 프로파일 차트: Y축 스케일 확장 및 초과 방지 동적 스케일링 적용
+# - 8개 프로파일 차트: Y축 스케일 확장 및 동적 스케일링 방어 로직
 # - 우측 하단 장비 이미지(Equipment View) 동적 연동 추가
-# - 실시간 데이터 시뮬레이터 (9초 단위 확정적 알람 주입, 변동성 극대화)
+# - 실시간 데이터 시뮬레이터 (9초 단위 확정적 알람 주입)
 # =========================================================
 
 st.set_page_config(page_title="공정 실시간 모니터링", layout="wide", initial_sidebar_state="expanded")
@@ -27,6 +29,11 @@ if "resolved_alarms" not in st.session_state:
     st.session_state.resolved_alarms = set()
 if "force_auto_target" not in st.session_state:
     st.session_state.force_auto_target = False
+if "last_worst_uid" not in st.session_state:
+    st.session_state.last_worst_uid = None
+# 사용자가 팝업에서 특정 알람을 '조사하기(🔍)'로 찍었을 때 저장할 변수
+if "investigate_target" not in st.session_state:
+    st.session_state.investigate_target = None 
 
 DATA_PATH = "mice_final_data_with_id.csv"
 CTRL_K = 3.0
@@ -34,6 +41,9 @@ RECENT_WINDOW_N = 120
 
 @st.cache_data
 def load_csv(path: str) -> pd.DataFrame:
+    if not os.path.exists(path):
+        st.error(f"데이터 파일을 찾을 수 없습니다: {path}")
+        st.stop()
     return pd.read_csv(path)
 
 if "df" not in st.session_state:
@@ -54,14 +64,13 @@ df = st.session_state.df
 FEATURE_COLS = [c for c in df.columns if c not in ("id", "label", "_id_sort", "run")]
 
 STAGE_NAMES = {
-    1: ("WS-01", "Wet Strip"),
-    2: ("RR-02", "Residue Removal"),
-    3: ("RN-03", "Rinse"),
-    4: ("FWC-04", "Final Wet Cleaning"),
-    5: ("FRD-05", "Final Rinse & Dry")
+    1: ("WS-01", "습식 박리"),
+    2: ("RR-02", "잔여물 제거"),
+    3: ("RN-03", "중간 린스"),
+    4: ("FWC-04", "최종 세정"),
+    5: ("FRD-05", "린스 및 건조")
 }
 
-# Y축 스케일 대폭 확장 (폭주 데이터 대비)
 AXIS_SPEC = {
     "temp": (15, 45, 30),
     "humidity": (40, 100, 70),
@@ -223,6 +232,19 @@ st.markdown(
         background-color: rgba(255,255,255,0.3); color: white; font-size: 10px; text-align: center;
         margin-left: 5px; vertical-align: middle;
       }}
+      
+      .popover-tooltip {{ position: relative; display: inline-block; cursor: help; margin-left: 6px; }}
+      .popover-tooltip .popover-tooltip-text {{
+        visibility: hidden; width: 220px; background-color: rgba(0, 0, 0, 0.85); color: #fff;
+        text-align: left; border-radius: 6px; padding: 10px; position: absolute;
+        z-index: 9999; top: -15px; left: 130%; opacity: 0;
+        transition: opacity 0.3s; font-size: 11px; line-height: 1.4; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+      }}
+      .popover-tooltip .popover-tooltip-text::after {{
+        content: ""; position: absolute; top: 15px; right: 100%; margin-top: -5px;
+        border-width: 5px; border-style: solid; border-color: transparent rgba(0, 0, 0, 0.85) transparent transparent;
+      }}
+      .popover-tooltip:hover .popover-tooltip-text {{ visibility: visible; opacity: 1; }}
 
       div[data-testid="stControlItem"] div[role="group"] {{
           width: 100% !important; padding: 8px 0 !important; display: flex !important;
@@ -300,7 +322,8 @@ for _, r in hist.iterrows():
                 "run": r_val,
                 "id": product_id,
                 "details": f"{feature_ko}: {v:.2f}",
-                "severity": z
+                "severity": z,
+                "feature": c
             })
 
 anomaly_list.sort(key=lambda x: x["severity"], reverse=True)
@@ -308,17 +331,52 @@ active_alarms = [a for a in anomaly_list if a["uid"] not in st.session_state.res
 resolved_alarms = [a for a in anomaly_list if a["uid"] in st.session_state.resolved_alarms]
 active_anom_count = len(active_alarms)
 
+
 # ----------------------------
-# 오토 포커스 (Auto-Targeting) & 버튼 동기화 핵심 로직
+# 🚀 오토 포커스 & 팝오버 돋보기(🔍) 로직 연동
 # ----------------------------
-if st.session_state.get("force_auto_target", False):
-    if active_alarms:
-        worst_uid = active_alarms[0]["uid"]
-        fcol_str = worst_uid.split("_", 2)[2] 
+latest_run_val = int(cur["run"])
+latest_active_alarms = [a for a in active_alarms if a["run"] == latest_run_val]
+
+if st.session_state.investigate_target:
+    inv_target = st.session_state.investigate_target
+    fcol_str = inv_target["feature"]
+    stage_part, metric_part = fcol_str.split("_", 1)
+    st.session_state.trend_stage = int(stage_part.replace("stage", ""))
+    st.session_state.trend_metric = metric_part
+
+elif st.session_state.get("force_auto_target", False):
+    st.session_state.investigate_target = None 
+    if latest_active_alarms:
+        latest_active_alarms.sort(key=lambda x: x["severity"], reverse=True)
+        target_alarm = latest_active_alarms[0]
+    elif active_alarms:
+        target_alarm = active_alarms[0]
+    else:
+        target_alarm = None
+
+    if target_alarm:
+        fcol_str = target_alarm["feature"]
         stage_part, metric_part = fcol_str.split("_", 1)
         st.session_state.trend_stage = int(stage_part.replace("stage", ""))
         st.session_state.trend_metric = metric_part
+        st.session_state.last_worst_uid = target_alarm["uid"]
+
     st.session_state.force_auto_target = False
+else:
+    if latest_active_alarms and not st.session_state.investigate_target:
+        latest_active_alarms.sort(key=lambda x: x["severity"], reverse=True)
+        current_worst_latest = latest_active_alarms[0]
+        
+        if current_worst_latest["uid"] != st.session_state.last_worst_uid:
+            fcol_str = current_worst_latest["feature"]
+            stage_part, metric_part = fcol_str.split("_", 1)
+            st.session_state.trend_stage = int(stage_part.replace("stage", ""))
+            st.session_state.trend_metric = metric_part
+            st.session_state.last_worst_uid = current_worst_latest["uid"]
+    else:
+        if not st.session_state.investigate_target:
+            st.session_state.last_worst_uid = None
 
 # ----------------------------
 # 카드용 데이터 구조 (미조치 이상 설비만 표시)
@@ -335,12 +393,10 @@ for s in STAGES:
             z = limit_exceed_score(v, f)
             uid = f"alarm_{run_val}_{f}"
 
-            # 현재 시점 기준 미조치 이상만 카드 후보로 포함
             if z >= 3.0 and uid not in st.session_state.resolved_alarms:
                 if z > worst_unresolved_z:
                     worst_unresolved_z, worst_unresolved_m, worst_unresolved_v = z, m, v
 
-    # 미조치 이상이 있는 stage만 추가
     if worst_unresolved_z >= 3.0:
         stage_data.append({
             "stage": s,
@@ -350,7 +406,6 @@ for s in STAGES:
             "state": "active",
         })
 
-# 위험도 순 정렬
 stage_data.sort(key=lambda x: x["z"], reverse=True)
 
 # ----------------------------
@@ -412,18 +467,54 @@ with top_r:
             background-color: {popover_bg}; color: {popover_color}; font-weight: 900; 
             font-size: 16px; width: 100%;
         }}
+        /* 팝업 안의 특정 텍스트를 가진 버튼만 초록색으로 변경 */
+        div[data-testid="stPopoverBody"] button:has(div:contains("처리완료")) {{
+            background-color: #10B981 !important;
+            color: white !important;
+            border: None !important;
+            font-weight: 800 !important;
+            height: 38px !important;
+        }}
+        div[data-testid="stPopoverBody"] button:has(div:contains("처리완료")):hover {{
+            background-color: #059669 !important;
+        }}
+        /* 돋보기 버튼은 기본(투명/회색) 스타일 유지 */
+        div[data-testid="stPopoverBody"] button:has(div:contains("🔍")) {{
+            background-color: transparent !important;
+            border: 1px solid #E5E7EB !important;
+            height: 38px !important;
+            color: #374151 !important;
+        }}
+        div[data-testid="stPopoverBody"] button:has(div:contains("🔍")):hover {{
+            border-color: #9CA3AF !important;
+        }}
         </style>
         ''', unsafe_allow_html=True)
         
         with st.popover(f"🔔 미조치 알람: {active_anom_count}건", use_container_width=True):
-            st.markdown("#### 설비 이상 조치 현황")
+            st.markdown('#### 설비 이상 조치 현황 <span class="popover-tooltip"><span class="info-badge" style="background-color:#9CA3AF; color:white; font-size:11px; margin-bottom:5px;">i</span><span class="popover-tooltip-text">리스트의 [🔍] 버튼 클릭 시, 해당 지표를 하단 트렌드 차트 및 상태 카드에 즉시 띄워 집중 분석할 수 있습니다.</span></span>', unsafe_allow_html=True)
+            
             if not active_alarms and not resolved_alarms:
                 st.info("최근 감지된 설비 이상이 없습니다.")
             
             for a in active_alarms:
-            # columns 없이 단일 컨테이너(c1 역할)만 사용
                 with st.container():
-                    st.error(f"**[{a['severity']:.1f}σ]** 순번 {a['run']} : {a['details']}")
+                    c_text, c_btn1, c_btn2 = st.columns([3.6, 0.6, 1.3])
+                    with c_text:
+                        st.error(f"[위험도: {a['severity']:.1f}σ] 순번 {a['run']}\n\n{a['details']}")
+                    with c_btn1:
+                        st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True) 
+                        if st.button("🔍", key=f"btn_inv_{a['uid']}", use_container_width=True):
+                            st.session_state.investigate_target = a
+                            st.rerun()
+                    with c_btn2:
+                        st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+                        if st.button("처리완료", key=f"btn_pop_{a['uid']}", use_container_width=True):
+                            st.session_state.resolved_alarms.add(a['uid'])
+                            if st.session_state.investigate_target and st.session_state.investigate_target["uid"] == a['uid']:
+                                st.session_state.investigate_target = None
+                            st.session_state.force_auto_target = True
+                            st.rerun()
             
             if resolved_alarms:
                 st.markdown("<hr style='margin: 15px 0 10px 0; border-color: #E5E7EB;'>", unsafe_allow_html=True)
@@ -431,7 +522,7 @@ with top_r:
                 for a in resolved_alarms:
                     st.markdown(f'''
                     <div style="background-color: #F9FAFB; color: #9CA3AF; padding: 10px; border-radius: 8px; margin-bottom: 8px; border: 1px solid #E5E7EB; font-size: 14px;">
-                        <del><b>[완료] 순번 {a['run']}</b> : {a['details']} ({a['severity']:.1f}σ)</del>
+                        <del><b>[조치완료] 순번 {a['run']} (ID: {a['id']})</b><br>{a['details']}</del>
                     </div>
                     ''', unsafe_allow_html=True)
 
@@ -512,35 +603,44 @@ with left:
     st.markdown("")
 
     # ----------------------------
-    # Recent Trend (Auto-Target)
+    # Recent Trend (Auto-Target 연동 + 상태 표시줄)
     # ----------------------------
-    filter_col1, filter_col2 = st.columns(2)
-    with filter_col1:
-        st.selectbox("분석 공정 (설비) 선택", STAGES, key="trend_stage", format_func=lambda x: f"{STAGE_NAMES.get(x, (f'ST-{x}', ''))[0]} ({STAGE_NAMES.get(x, ('', f'공정 {x}'))[1]})")
-    with filter_col2:
-        st.selectbox("분석 지표 선택", METRICS, key="trend_metric", format_func=lambda x: SENSOR_KO.get(x, x))
-    
     trend_feature = fcol(st.session_state.trend_stage, st.session_state.trend_metric)
+    
+    # 현재 보고 있는 지표의 한글명과 공정 정보 추출
+    current_eq_code, current_eq_desc = STAGE_NAMES.get(st.session_state.trend_stage, (f"ST-{st.session_state.trend_stage}", ""))
+    current_metric_ko = SENSOR_KO.get(st.session_state.trend_metric, st.session_state.trend_metric)
     
     feature_active_uids = [a["uid"] for a in active_alarms if a["uid"].endswith(f"_{trend_feature}")]
     is_active_in_trend = len(feature_active_uids) > 0
 
     rc_l, rc_r = st.columns([4, 1])
     with rc_l:
-        st.markdown('<div class="pt" style="font-size:15px; padding-top:6px;">Recent Trend <span class="pill" style="margin-left:8px; display:inline-block; padding:2px 10px; border-radius:999px; background:rgba(20,40,160,0.05); color:#1428A0; font-size:12px; font-weight:800; border:1px solid rgba(20,40,160,0.2);">집중 분석창</span></div>', unsafe_allow_html=True)
+        st.markdown(f'''
+        <div class="pt" style="font-size:15px; padding-top:6px; display: flex; align-items: center;">
+            Recent Trend
+            <span class="pill" style="margin-left:8px; display:inline-block; padding:2px 10px; border-radius:999px; background:rgba(20,40,160,0.05); color:#1428A0; font-size:12px; font-weight:800; border:1px solid rgba(20,40,160,0.2);">집중 분석창</span>
+            <span style="margin-left: 15px; font-size: 13px; color: #4B5563; font-weight: 700; background: #F3F4F6; padding: 4px 12px; border-radius: 6px; border: 1px solid #E5E7EB;">
+                👁️ 현재 타겟: [{current_eq_code}] {current_eq_desc} - {current_metric_ko}
+            </span>
+        </div>
+        ''', unsafe_allow_html=True)
     with rc_r:
         if is_active_in_trend:
             st.markdown("""
             <style>
-            div[data-testid="stButton"] button {
-                background-color: #10B981; color: white; border: None; font-weight: 800; height: 38px;
+            /* 메인 화면에 있는 '현재 지표 처리완료' 버튼을 위한 CSS */
+            div[data-testid="stButton"] button:has(div:contains("현재 지표 처리완료")) {
+                background-color: #10B981 !important; color: white !important; border: None !important; font-weight: 800 !important; height: 38px !important;
             }
-            div[data-testid="stButton"] button:hover { background-color: #059669; color: white; }
+            div[data-testid="stButton"] button:has(div:contains("현재 지표 처리완료")):hover { background-color: #059669 !important; color: white !important; }
             </style>""", unsafe_allow_html=True)
             
             if st.button("현재 지표 처리완료", key="btn_trend_resolve", use_container_width=True):
                 for uid in feature_active_uids:
                     st.session_state.resolved_alarms.add(uid)
+                if st.session_state.investigate_target and st.session_state.investigate_target["feature"] == trend_feature:
+                    st.session_state.investigate_target = None
                 st.session_state.force_auto_target = True 
                 st.rerun()
 
@@ -568,6 +668,15 @@ with left:
         if not resolved_points.empty:
             fig.add_trace(go.Scatter(x=resolved_points["run"], y=resolved_points[trend_feature], mode="markers", name="조치 완료 이력", marker=dict(size=9, color=RESOLVED_GRAY, symbol="circle-open", line=dict(width=1.5))))
 
+    if st.session_state.investigate_target and st.session_state.investigate_target["feature"] == trend_feature:
+        inv_run = st.session_state.investigate_target["run"]
+        if inv_run in plot["run"].values:
+            inv_y = float(plot.loc[plot["run"] == inv_run, trend_feature].iloc[0])
+            fig.add_trace(go.Scatter(
+                x=[inv_run], y=[inv_y], mode="markers+text", name="분석 대상", text=[f"분석 대상: 순번 {inv_run}"],
+                textposition="top center", marker=dict(size=16, symbol="star", color="#8B5CF6", line=dict(width=2, color="white"))
+            ))
+
     if t in set(plot["run"]):
         ycur = float(plot.loc[plot["run"] == t, trend_feature].iloc[0])
         fig.add_trace(go.Scatter(x=[t], y=[ycur], mode="markers+text", name="현재 위치", text=["현재 제품"], textposition="top center", marker=dict(size=12, symbol="diamond", color=WARN)))
@@ -591,7 +700,7 @@ with left:
 
 with right:
     # ----------------------------
-    # Stage Profile (동적 스케일 확장)
+    # Stage Profile 
     # ----------------------------
     st.markdown('<div class="panel"><div class="pt">Stage Profile <span class="pill" style="margin-left:8px; display:inline-block; padding:2px 10px; border-radius:999px; background:rgba(20,40,160,0.05); color:#1428A0; font-size:12px; font-weight:800; border:1px solid rgba(20,40,160,0.2);">8개 지표 현황</span></div></div>', unsafe_allow_html=True)
 
@@ -667,8 +776,10 @@ with right:
     st.markdown('<div class="panel"><div class="pt">Equipment View <span class="pill" style="margin-left:8px; display:inline-block; padding:2px 10px; border-radius:999px; background:rgba(20,40,160,0.05); color:#1428A0; font-size:12px; font-weight:800; border:1px solid rgba(20,40,160,0.2);">실시간 설비 연동</span></div></div>', unsafe_allow_html=True)
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    img_png = os.path.join(base_dir, "image1.png")
-    img_jpg = os.path.join(base_dir, "image1.jpg")
+    images_dir = os.path.join(base_dir, "images")
+    
+    img_png = os.path.join(images_dir, "image1.png")
+    img_jpg = os.path.join(images_dir, "image1.jpg")
 
     target_img = None
     if os.path.exists(img_png):
@@ -679,8 +790,7 @@ with right:
     if target_img is not None:
         st.image(target_img, use_container_width=True)
     else:
-        st.info("현재 코드 파일과 같은 폴더에 'image1.png' 또는 'image1.jpg' 파일이 있는지 확인하세요.")
-
+        st.info("현재 코드 파일 위치의 'images' 폴더 안에 'image1.png' 또는 'image1.jpg' 파일이 있는지 확인하세요.")
 
 # ----------------------------
 # 실시간 데이터 시뮬레이터
