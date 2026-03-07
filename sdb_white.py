@@ -11,11 +11,12 @@ import time
 # - 사후 분석용 메인 대시보드 (1페이지)
 # - Stage Snapshot: 위험도 순 자동 정렬 (Priority Queue 완벽 구현)
 # - 알람 개별 분리 & 버튼 증발 버그 완벽 해결
-# - 🚀 팝오버 상단 통합 툴팁 & 개별 [🔍] 포커싱 버튼 적용
-# - 🚀 Recent Trend: 최신 알람 자동 추적 + '분석 대상' 마커 동시 지원
-# - 🚀 필터 제거 및 동적 상태 표시줄(Indicator) 도입
+# - 팝오버 상단 통합 툴팁 & 개별 [🔍] 포커싱 버튼 적용 (초록 배경 제거)
+# - Recent Trend: 최신 알람 자동 추적 + '분석 대상' 마커 동시 지원
+# - 필터 제거 및 동적 상태 표시줄(Indicator) 전문화 (이모지 완전 제거)
+# - 공정(Stage) 이름 현업 5단계 프로세스로 전면 수정
 # - 5대 KPI 재배치 (OEE - 미조치 설비이상 - 총생산 - 불량수 - 불량률)
-# - 8개 프로파일 차트: Y축 스케일 확장 및 동적 스케일링 방어 로직
+# - 8개 프로파일 차트: 글씨 잘림 방지, 45도 회전, 동적 스케일링 적용
 # - 우측 하단 장비 이미지(Equipment View) 동적 연동 추가
 # - 실시간 데이터 시뮬레이터 (9초 단위 확정적 알람 주입)
 # =========================================================
@@ -63,12 +64,13 @@ df = st.session_state.df
 
 FEATURE_COLS = [c for c in df.columns if c not in ("id", "label", "_id_sort", "run")]
 
+# 현업 프로세스에 맞춘 5단계 공정 이름 업데이트
 STAGE_NAMES = {
-    1: ("WS-01", "습식 박리"),
-    2: ("RR-02", "잔여물 제거"),
-    3: ("RN-03", "중간 린스"),
-    4: ("FWC-04", "최종 세정"),
-    5: ("FRD-05", "린스 및 건조")
+    1: ("CC-01", "화학 세정 1"),
+    2: ("RN-02", "헹굼"),
+    3: ("CC-03", "화학 세정 2"),
+    4: ("RN-04", "헹굼"),
+    5: ("DR-05", "건조")
 }
 
 AXIS_SPEC = {
@@ -333,7 +335,7 @@ active_anom_count = len(active_alarms)
 
 
 # ----------------------------
-# 🚀 오토 포커스 & 팝오버 돋보기(🔍) 로직 연동
+# 오토 포커스 & 팝오버 돋보기(🔍) 로직 연동
 # ----------------------------
 latest_run_val = int(cur["run"])
 latest_active_alarms = [a for a in active_alarms if a["run"] == latest_run_val]
@@ -377,6 +379,10 @@ else:
     else:
         if not st.session_state.investigate_target:
             st.session_state.last_worst_uid = None
+
+current_selected_feature = fcol(st.session_state.get("trend_stage", 1), st.session_state.get("trend_metric", "temp"))
+if st.session_state.investigate_target and st.session_state.investigate_target["feature"] != current_selected_feature:
+    st.session_state.investigate_target = None
 
 # ----------------------------
 # 카드용 데이터 구조 (미조치 이상 설비만 표시)
@@ -491,7 +497,7 @@ with top_r:
         </style>
         ''', unsafe_allow_html=True)
         
-        with st.popover(f"🔔 미조치 알람: {active_anom_count}건", use_container_width=True):
+        with st.popover(f"미조치 알람: {active_anom_count}건", use_container_width=True):
             st.markdown('#### 설비 이상 조치 현황 <span class="popover-tooltip"><span class="info-badge" style="background-color:#9CA3AF; color:white; font-size:11px; margin-bottom:5px;">i</span><span class="popover-tooltip-text">리스트의 [🔍] 버튼 클릭 시, 해당 지표를 하단 트렌드 차트 및 상태 카드에 즉시 띄워 집중 분석할 수 있습니다.</span></span>', unsafe_allow_html=True)
             
             if not active_alarms and not resolved_alarms:
@@ -499,7 +505,7 @@ with top_r:
             
             for a in active_alarms:
                 with st.container():
-                    c_text, c_btn1 = st.columns([9, 1])
+                    c_text, c_btn1 = st.columns([8.5, 1.5])
                     with c_text:
                         st.error(f"**[{a['severity']:.1f}sigma]** 순번 {a['run']} : {a['details']}")
                     with c_btn1:
@@ -514,7 +520,7 @@ with top_r:
                 for a in resolved_alarms:
                     st.markdown(f'''
                     <div style="background-color: #F9FAFB; color: #9CA3AF; padding: 10px; border-radius: 8px; margin-bottom: 8px; border: 1px solid #E5E7EB; font-size: 14px;">
-                        <del><b>[완료] 순번 {a['run']}</b> : {a['details']} ({a['severity']:.1f}σ)</del>
+                        <del><b>[조치완료] 순번 {a['run']} (ID: {a['id']})</b><br>{a['details']}</del>
                     </div>
                     ''', unsafe_allow_html=True)
 
@@ -595,11 +601,10 @@ with left:
     st.markdown("")
 
     # ----------------------------
-    # Recent Trend (Auto-Target 연동 + 상태 표시줄)
+    # Recent Trend
     # ----------------------------
     trend_feature = fcol(st.session_state.trend_stage, st.session_state.trend_metric)
     
-    # 현재 보고 있는 지표의 한글명과 공정 정보 추출
     current_eq_code, current_eq_desc = STAGE_NAMES.get(st.session_state.trend_stage, (f"ST-{st.session_state.trend_stage}", ""))
     current_metric_ko = SENSOR_KO.get(st.session_state.trend_metric, st.session_state.trend_metric)
     
@@ -613,7 +618,7 @@ with left:
             Recent Trend
             <span class="pill" style="margin-left:8px; display:inline-block; padding:2px 10px; border-radius:999px; background:rgba(20,40,160,0.05); color:#1428A0; font-size:12px; font-weight:800; border:1px solid rgba(20,40,160,0.2);">집중 분석창</span>
             <span style="margin-left: 15px; font-size: 13px; color: #4B5563; font-weight: 700; background: #F3F4F6; padding: 4px 12px; border-radius: 6px; border: 1px solid #E5E7EB;">
-                👁️ 현재 타겟: [{current_eq_code}] {current_eq_desc} - {current_metric_ko}
+                현재 모니터링 지표 : [{current_eq_code}] {current_eq_desc} - {current_metric_ko}
             </span>
         </div>
         ''', unsafe_allow_html=True)
@@ -621,14 +626,13 @@ with left:
         if is_active_in_trend:
             st.markdown("""
             <style>
-            /* 메인 화면에 있는 '현재 지표 처리완료' 버튼을 위한 CSS */
-            div[data-testid="stButton"] button:has(div:contains("현재 지표 처리완료")) {
+            div[data-testid="stButton"] button:has(div:contains("처리완료")) {
                 background-color: #10B981 !important; color: white !important; border: None !important; font-weight: 800 !important; height: 38px !important;
             }
-            div[data-testid="stButton"] button:has(div:contains("현재 지표 처리완료")):hover { background-color: #059669 !important; color: white !important; }
+            div[data-testid="stButton"] button:has(div:contains("처리완료")):hover { background-color: #059669 !important; color: white !important; }
             </style>""", unsafe_allow_html=True)
             
-            if st.button("현재 지표 처리완료", key="btn_trend_resolve", use_container_width=True):
+            if st.button("처리완료", key="btn_trend_resolve", use_container_width=True):
                 for uid in feature_active_uids:
                     st.session_state.resolved_alarms.add(uid)
                 if st.session_state.investigate_target and st.session_state.investigate_target["feature"] == trend_feature:
@@ -692,7 +696,7 @@ with left:
 
 with right:
     # ----------------------------
-    # Stage Profile 
+    # Stage Profile (텍스트 겹침 완벽 수정본)
     # ----------------------------
     st.markdown('<div class="panel"><div class="pt">Stage Profile <span class="pill" style="margin-left:8px; display:inline-block; padding:2px 10px; border-radius:999px; background:rgba(20,40,160,0.05); color:#1428A0; font-size:12px; font-weight:800; border:1px solid rgba(20,40,160,0.2);">8개 지표 현황</span></div></div>', unsafe_allow_html=True)
 
@@ -732,34 +736,26 @@ with right:
         if target_val is not None:
             fig_m.add_hline(y=target_val, line_dash="dash", line_color="#10B981", line_width=1.5, opacity=0.7)
 
+        # [핵심 수정] margin 조절, x축 글자 45도 꺾기, y축 도메인(domain) 조절로 제목 겹침 방지
         layout_dict = dict(
-            height=185, 
-            margin=dict(l=40, r=10, t=35, b=40), 
+            height=190, 
+            margin=dict(l=35, r=10, t=35, b=45), 
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color=TEXT, size=10),
-            
-            # [수정 핵심] yaxis에 domain을 추가해서 그래프 천장을 낮춥니다.
-            yaxis=dict(
-                # 기존에 정의된 range 등 설정은 그대로 유지됩니다.
-                gridcolor="rgba(0,0,0,0.05)",
-                zeroline=False,
-                tickfont=dict(size=9),
-                # 전체 높이를 1로 봤을 때 0.8까지만 그래프를 그리게 제한합니다.
-                # 상단 20% 공간이 강제로 비워져서 제목과 절대 겹치지 않습니다.
-                domain=[0, 0.8] 
-            ),
-            
             xaxis=dict(
                 tickmode="array", 
                 tickvals=x_labels, 
-                tickangle=-45,
+                tickangle=-45, 
                 gridcolor="rgba(0,0,0,0.05)", 
                 tickfont=dict(size=9)
             ),
-            
+            yaxis=dict(
+                gridcolor="rgba(0,0,0,0.05)",
+                zeroline=False,
+                domain=[0, 0.8]  # 그래프를 아래 80% 영역에만 그려서 위쪽 공간 확보
+            ),
             showlegend=False,
-            # 제목 위치를 비워둔 20% 공간 안으로 배치합니다.
             title=dict(
                 text=f"<b>{metric_ko}</b>", 
                 x=0, 
@@ -776,9 +772,7 @@ with right:
                 if cur_min < plot_min: plot_min = cur_min - abs(cur_min) * 0.1 - 1
                 if cur_max > plot_max: plot_max = cur_max + abs(cur_max) * 0.1 + 1
                 
-            layout_dict["yaxis"] = dict(range=[plot_min, plot_max], gridcolor="rgba(0,0,0,0.05)", zeroline=False)
-        else:
-            layout_dict["yaxis"] = dict(gridcolor="rgba(0,0,0,0.05)")
+            layout_dict["yaxis"]["range"] = [plot_min, plot_max]
 
         fig_m.update_layout(**layout_dict)
         figs.append(fig_m)
