@@ -3,7 +3,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-import re
 
 # 캣부스트 라이브러리 임포트
 try:
@@ -16,7 +15,7 @@ except ImportError:
 # AI Predictive Maintenance Dashboard (What-If Simulator)
 # - CatBoost 모델 연동 기반 미래 불량 확률 예측
 # - 직관적인 8대 핵심 공정 지표(Master Variable) 조작 UI
-# - 51.48%, 80% 임계값(Threshold) 기반 게이지 차트
+# - [업그레이드] 슬라이더 가드레일, Top 3 위험 요인 분석, AI 최적화 버튼 적용
 # =========================================================
 
 st.set_page_config(page_title="AI 불량 예측 시뮬레이터", layout="wide")
@@ -56,6 +55,13 @@ st.markdown(
       
       /* 슬라이더 라벨(제목) 폰트 강조 */
       div[data-testid="stSlider"] label p {{ font-weight: 800 !important; color: #111827 !important; font-size: 14px !important; }}
+      
+      /* AI 버튼 스타일 */
+      .ai-btn-container button {{
+          width: 100%; font-weight: 800; background-color: #1428A0; color: white;
+          border-radius: 8px; border: none; padding: 10px 0;
+      }}
+      .ai-btn-container button:hover {{ background-color: #0F1D7A; color: white; }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -65,14 +71,14 @@ st.markdown(
 # 8대 핵심 지표 한글 매핑
 # ----------------------------
 SENSOR_KO = {
-    "temp": "온도 (Temperature)", 
-    "humidity": "습도 (Humidity)", 
-    "flow_deviation": "유량 편차 (Flow Deviation)", 
-    "density_deviation": "밀도 편차 (Density Deviation)", 
-    "viscosity_deviation": "점도 편차 (Viscosity Deviation)", 
-    "o2_deviation": "O2 편차 (O2 Deviation)", 
-    "n_deviation": "N2 편차 (N2 Deviation)", 
-    "co2_deviation": "CO2 편차 (CO2 Deviation)",
+    "temp": "온도", 
+    "humidity": "습도", 
+    "flow_deviation": "유량 편차", 
+    "density_deviation": "밀도 편차", 
+    "viscosity_deviation": "점도 편차", 
+    "o2_deviation": "O2 편차", 
+    "n_deviation": "N2 편차", 
+    "co2_deviation": "CO2 편차",
 }
 
 CORE_METRICS = [
@@ -111,47 +117,46 @@ model = load_ml_model()
 
 model_features = model.feature_names_ if hasattr(model, 'feature_names_') else original_feature_cols
 
-# 각 핵심 지표별로 전체 공정(stage 1~5) 데이터를 통합하여 최소/최대/중앙값 도출
+# 각 핵심 지표별 통계 도출 (가드레일용 Q1, Q3 추가)
 global_stats = {}
 for metric in CORE_METRICS:
     related_cols = [c for c in df.columns if c.endswith(f"_{metric}") and c.startswith("stage")]
     if related_cols:
         vals = df[related_cols].values.flatten()
-        vals = vals[~np.isnan(vals)] # 결측치 제거
+        vals = vals[~np.isnan(vals)] 
         global_stats[metric] = {
             "min": float(np.min(vals)),
             "max": float(np.max(vals)),
-            "median": float(np.median(vals))
+            "median": float(np.median(vals)),
+            "q1": float(np.percentile(vals, 25)),
+            "q3": float(np.percentile(vals, 75))
         }
 
+# 세션 상태 초기화 (슬라이더 조작용)
+for metric in CORE_METRICS:
+    if f"slider_{metric}" not in st.session_state:
+        st.session_state[f"slider_{metric}"] = global_stats.get(metric, {}).get("median", 0.0)
+
+# AI 최적화 버튼 콜백 함수
+def reset_to_optimal():
+    for m in CORE_METRICS:
+        if m in global_stats:
+            st.session_state[f"slider_{m}"] = global_stats[m]["median"]
+
 # ----------------------------
-# Inference Data Generator (동적 할당)
+# Inference Data Generator
 # ----------------------------
 def generate_inference_row(master_state, required_features):
-    """
-    사용자가 8개의 마스터 슬라이더를 조작하면,
-    전체 공정(1~5)에 동일한 값을 일괄 세팅하여 파생변수(diff, slope)까지 재계산
-    """
     row = {}
     for feat in required_features:
-        # 1. Base Feature 처리 (예: stage1_temp)
         if feat.startswith("stage"):
             parts = feat.split("_", 1)
             if len(parts) == 2 and parts[1] in master_state:
                 row[feat] = master_state[parts[1]]
             else:
                 row[feat] = 0.0
-                
-        # 2. Diff (차이) 파생변수 처리
-        elif "_diff_" in feat:
-            # 일괄 세팅하므로 공정간 차이는 0
+        elif "_diff_" in feat or "_slope" in feat:
             row[feat] = 0.0
-            
-        # 3. Slope (기울기) 파생변수 처리
-        elif "_slope" in feat:
-            # 일괄 세팅하므로 추세 변화량(기울기)은 0
-            row[feat] = 0.0
-            
         else:
             row[feat] = 0.0
     return row
@@ -159,7 +164,7 @@ def generate_inference_row(master_state, required_features):
 # ----------------------------
 # Header
 # ----------------------------
-st.markdown('<div class="topbar"><div class="brand">SPARTA ELECTRONICS · AI 미래 품질 예측 (What-If)</div><div class="subtitle">핵심 8대 공정 변수 조작 및 실시간 불량 확률 시뮬레이션</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="topbar"><div class="brand">SPARTA ELECTRONICS · AI 미래 품질 예측</div><div class="subtitle">핵심 8대 공정 변수 조작 및 실시간 불량 확률 시뮬레이션</div></div>', unsafe_allow_html=True)
 
 # ----------------------------
 # Main Layout
@@ -167,24 +172,33 @@ st.markdown('<div class="topbar"><div class="brand">SPARTA ELECTRONICS · AI 미
 left_col, right_col = st.columns([1.2, 1.8], gap="large")
 
 with left_col:
-    st.markdown('<div class="panel"><div class="pt">8대 핵심 지표 마스터 컨트롤</div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel"><div class="pt">8대 지표 컨트롤</div>', unsafe_allow_html=True)
     st.markdown('<p style="font-size:13px; color:#6B7280; margin-bottom:20px; line-height:1.5;">아래 조절바를 움직이면 1~5공정 전체에 해당 값이 일괄 적용되어 AI가 즉각적으로 불량 확률을 예측합니다.</p>', unsafe_allow_html=True)
     
+    # 1. AI 최적화 레시피 리셋 버튼 추가
+    st.markdown('<div class="ai-btn-container">', unsafe_allow_html=True)
+    st.button("AI 최적 공정 조건 자동 세팅", on_click=reset_to_optimal, use_container_width=True)
+    st.markdown('</div><div style="height: 15px;"></div>', unsafe_allow_html=True)
+
     master_inputs = {}
     
-    # 8개의 마스터 슬라이더 렌더링
+    # 2. 슬라이더에 가드레일(권장 범위) 추가 렌더링
     for metric in CORE_METRICS:
         if metric in global_stats:
             kor_name = SENSOR_KO.get(metric, metric)
             min_v = global_stats[metric]["min"]
             max_v = global_stats[metric]["max"]
             med_v = global_stats[metric]["median"]
+            q1_v = global_stats[metric]["q1"]
+            q3_v = global_stats[metric]["q3"]
+            
+            # 가드레일 텍스트 추가
+            label_text = f"{kor_name} (권장: {q1_v:.2f} ~ {q3_v:.2f})"
             
             master_inputs[metric] = st.slider(
-                label=kor_name,
+                label=label_text,
                 min_value=min_v,
                 max_value=max_v,
-                value=med_v,
                 step=(max_v - min_v) / 100.0 if max_v > min_v else 0.1,
                 key=f"slider_{metric}"
             )
@@ -193,15 +207,12 @@ with left_col:
     st.markdown('</div>', unsafe_allow_html=True)
 
 with right_col:
-    # 1. 모델 입력 데이터 실시간 재구축
     inference_row = generate_inference_row(master_inputs, model_features)
     sim_df = pd.DataFrame([inference_row])[model_features] 
     
-    # 2. AI 확률 예측 (CatBoost)
     pred_proba = model.predict_proba(sim_df)[0]
-    defect_prob = pred_proba[1] * 100  # 불량일 확률 (%)
+    defect_prob = pred_proba[1] * 100 
     
-    # 우리가 정한 임계값(Threshold) 로직 적용
     if defect_prob < 51.48:
         gauge_color = GOOD
         status_msg = "안정 (Stable)"
@@ -215,7 +226,6 @@ with right_col:
         status_msg = "위험 (Critical)"
         status_desc = "위험 임계값(80.0%)을 초과했습니다. 즉각적인 공정 중단 및 레시피 전면 수정이 필요합니다."
 
-    # 상단: 게이지 차트 패널
     st.markdown('<div class="panel" style="height: auto;"><div class="pt">AI 실시간 예측 결과</div>', unsafe_allow_html=True)
     
     g_col1, g_col2 = st.columns([1.2, 1])
@@ -253,7 +263,6 @@ with right_col:
         
         st.markdown("<hr style='margin: 20px 0; border-color: #E5E7EB;'>", unsafe_allow_html=True)
         
-        # 임계값 안내 범례 추가 (이모지 제거 완료)
         st.markdown(f'''
         <div style="background-color:#F3F4F6; padding:10px; border-radius:8px; border:1px solid #E5E7EB;">
             <div style="font-size:12px; font-weight:800; color:#374151; margin-bottom:4px;">운영 임계값 (Threshold) 기준</div>
@@ -262,5 +271,44 @@ with right_col:
             <div style="font-size:11px; color:#6B7280;">- <b>위험:</b> 80% 이상</div>
         </div>
         ''', unsafe_allow_html=True)
+    
+    st.markdown("<hr style='margin: 10px 0; border-color: #E5E7EB;'>", unsafe_allow_html=True)
+    
+    # 3. 실시간 위험 요인 Top 3 분석 로직
+    deviations = []
+    for metric, current_val in master_inputs.items():
+        if metric in global_stats:
+            med_v = global_stats[metric]["median"]
+            min_v = global_stats[metric]["min"]
+            max_v = global_stats[metric]["max"]
+            
+            # 중앙값 대비 어느 정도(비율) 틀어졌는지 계산
+            range_span = max_v - min_v if max_v > min_v else 1.0
+            deviation_score = abs(current_val - med_v) / range_span
+            
+            deviations.append({
+                "name": SENSOR_KO.get(metric, metric).split(" ")[0],
+                "score": deviation_score,
+                "current": current_val,
+                "diff": current_val - med_v
+            })
+            
+    deviations.sort(key=lambda x: x["score"], reverse=True)
+    top3_risks = deviations[:3]
+
+    st.markdown('<div style="font-size:15px; font-weight:900; color:#111827; margin-bottom:12px;">실시간 위험 요인 Top 3 분석 (기준값 대비 이탈률)</div>', unsafe_allow_html=True)
+    
+    risk_html = ""
+    for idx, risk in enumerate(top3_risks):
+        direction = "초과" if risk["diff"] > 0 else "미달"
+        color = BAD if risk["score"] > 0.2 else (WARN if risk["score"] > 0.1 else GOOD)
+        
+        risk_html += f'''
+        <div style="display:flex; justify-content:space-between; align-items:center; background:#F9FAFB; padding:12px 16px; border-radius:8px; margin-bottom:8px; border-left: 4px solid {color}; border-top: 1px solid #E5E7EB; border-right: 1px solid #E5E7EB; border-bottom: 1px solid #E5E7EB;">
+            <div style="font-size:14px; font-weight:800; color:#374151;">{idx+1}위. {risk['name']}</div>
+            <div style="font-size:13px; font-weight:700; color:{color};">기준치 대비 {abs(risk['diff']):.2f} {direction}</div>
+        </div>
+        '''
+    st.markdown(risk_html, unsafe_allow_html=True)
     
     st.markdown('</div>', unsafe_allow_html=True)
