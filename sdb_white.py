@@ -7,18 +7,11 @@ import re
 import time
 
 # =========================================================
-# Process Monitor (Latest) + Control-Limit Anomaly
+# Process Monitor (Latest) + SPC 4 Zone Rules (존룰 완벽 적용)
 # - 사후 분석용 메인 대시보드 (1페이지)
-# - Stage Snapshot: 위험도 순 자동 정렬 (Priority Queue 완벽 구현)
-# - 알람 개별 분리 & 버튼 증발 버그 완벽 해결
-# - 팝오버 상단 통합 툴팁 & 개별 [🔍] 포커싱 버튼 적용 (초록 배경 제거)
-# - Recent Trend: 최신 알람 자동 추적 + '분석 대상' 마커 동시 지원
-# - 필터 제거 및 동적 상태 표시줄(Indicator) 전문화 (이모지 완전 제거)
-# - 공정(Stage) 이름 현업 5단계 프로세스로 전면 수정
-# - 5대 KPI 재배치 (OEE - 미조치 설비이상 - 총생산 - 불량수 - 불량률)
-# - 8개 프로파일 차트: 글씨 잘림 방지, 45도 회전, 동적 스케일링 적용
-# - 우측 하단 장비 이미지(Equipment View) 동적 연동 추가
-# - 실시간 데이터 시뮬레이터 (9초 단위 확정적 알람 주입)
+# - [핵심 변경] SPC 4 Zone Rules (Rule 1~4) 벡터화 연산 및 알람 추출 적용
+# - Stage Snapshot: SPC 감지 기반 상태 카드 연동 및 발생 룰(Rule) 텍스트 추가
+# - Recent Trend: 상/하한선 이탈(Rule 1)뿐만 아니라 패턴 이상(Rule 2~4)도 마커로 표기
 # =========================================================
 
 st.set_page_config(page_title="공정 실시간 모니터링", layout="wide", initial_sidebar_state="expanded")
@@ -32,7 +25,6 @@ if "force_auto_target" not in st.session_state:
     st.session_state.force_auto_target = False
 if "last_worst_uid" not in st.session_state:
     st.session_state.last_worst_uid = None
-# 사용자가 팝업에서 특정 알람을 '조사하기(🔍)'로 찍었을 때 저장할 변수
 if "investigate_target" not in st.session_state:
     st.session_state.investigate_target = None 
 
@@ -286,7 +278,7 @@ w0 = max(0, t - RECENT_WINDOW_N + 1)
 hist = df.iloc[w0 : t + 1].copy()
 
 # ----------------------------
-# Control limits & Anomaly Extraction
+# Control limits & SPC 4-Rule Anomaly Extraction
 # ----------------------------
 def compute_ctrl_limits(hist_df: pd.DataFrame, feature_cols: list[str], k: float) -> dict[str, tuple[float, float, float, float]]:
     limits = {}
@@ -302,33 +294,91 @@ def compute_ctrl_limits(hist_df: pd.DataFrame, feature_cols: list[str], k: float
 
 CTRL_LIMITS = compute_ctrl_limits(hist, FEATURE_COLS, CTRL_K)
 
-def limit_exceed_score(val, feature: str) -> float:
-    if feature not in CTRL_LIMITS: return 0.0
-    mu, sd, lcl, ucl = CTRL_LIMITS[feature]
-    if val is None or (isinstance(val, float) and np.isnan(val)) or (not np.isfinite(mu)) or (not np.isfinite(sd)) or sd <= 0:
-        return 0.0
-    return abs((float(val) - mu) / sd)
-
-# 상세 알람 리스트 추출 
+# [핵심] SPC 4 Zone Rules 기반 벡터화 알람 추출 로직
 anomaly_list = []
-for _, r in hist.iterrows():
-    r_val = int(r["run"])
-    product_id = r.get("id", "-")
-    for c in FEATURE_COLS:
-        v = pd.to_numeric(r.get(c), errors="coerce")
-        z = limit_exceed_score(v, c)
-        if z >= 3.0: 
-            feature_ko = translate_feature_name(c) 
-            anomaly_list.append({
-                "uid": f"alarm_{r_val}_{c}", 
-                "run": r_val,
-                "id": product_id,
-                "details": f"{feature_ko}: {v:.2f}",
-                "severity": z,
-                "feature": c
-            })
+for c in FEATURE_COLS:
+    mu, sd, lcl, ucl = CTRL_LIMITS.get(c, (np.nan, np.nan, np.nan, np.nan))
+    if not np.isfinite(mu) or not np.isfinite(sd) or sd <= 0:
+        continue
+        
+    s = pd.to_numeric(hist[c], errors="coerce")
+    run_vals = hist["run"].values
+    id_vals = hist["id"].values
+    
+    # Z-Score 계산
+    z_scores = (s - mu) / sd
+    
+    # -------------------------
+    # Rule 1: Beyond Limits (1개의 점이 3σ 이탈)
+    # -------------------------
+    rule1 = z_scores.abs() > 3.0
+    
+    # -------------------------
+    # Rule 2: Shift (9개의 점이 연속으로 평균의 한쪽 방향에 존재)
+    # -------------------------
+    gt_mu = (s > mu).astype(int)
+    lt_mu = (s < mu).astype(int)
+    rule2 = (gt_mu.rolling(9).sum() == 9) | (lt_mu.rolling(9).sum() == 9)
+    
+    # -------------------------
+    # Rule 3: Trend (6개의 점이 연속적으로 상승 또는 하락) -> 5번의 차이가 연속 같은 부호
+    # -------------------------
+    diff = s.diff()
+    inc = (diff > 0).astype(int)
+    dec = (diff < 0).astype(int)
+    rule3 = (inc.rolling(5).sum() == 5) | (dec.rolling(5).sum() == 5)
+    
+    # -------------------------
+    # Rule 4: Alternating (14개의 점이 번갈아가며 증감) -> 13번의 차이 부호가 계속 반전
+    # -------------------------
+    sign_flip = (diff * diff.shift(1) < 0).astype(int)
+    rule4 = sign_flip.rolling(12).sum() == 12 # 13번 차이의 곱이 12번 모두 음수여야 함
+    
+    # 하나라도 룰에 걸린 인덱스 추출
+    any_rule = rule1 | rule2 | rule3 | rule4
+    idx_with_alarm = np.where(any_rule)[0]
+    
+    for i in idx_with_alarm:
+        r_val = run_vals[i]
+        p_id = id_vals[i]
+        val = s.iloc[i]
+        z_val = z_scores.iloc[i]
+        
+        # 중복 감지 시 우선순위: Rule 1 > Rule 2 > Rule 3 > Rule 4
+        # (severity 부여를 통해 화면 정렬 로직 대응)
+        if rule1.iloc[i]:
+            best_rule = "Rule 1 (3σ 이탈)"
+            sev = abs(z_val) if abs(z_val) >= 3.0 else 3.1
+        elif rule2.iloc[i]:
+            best_rule = "Rule 2 (공정 편향)"
+            sev = 2.9
+        elif rule3.iloc[i]:
+            best_rule = "Rule 3 (연속 증감)"
+            sev = 2.8
+        elif rule4.iloc[i]:
+            best_rule = "Rule 4 (교대 증감)"
+            sev = 2.7
+        else:
+            continue
+            
+        feature_ko = translate_feature_name(c)
+        uid = f"alarm_{r_val}_{c}"
+        
+        anomaly_list.append({
+            "uid": uid,
+            "run": int(r_val),
+            "id": p_id,
+            "details": f"{feature_ko}: {val:.2f} [{best_rule}]",
+            "severity": sev,
+            "feature": c,
+            "rule": best_rule,
+            "val": val,
+            "z": z_val
+        })
 
+# 우선순위 기반 정렬 (Rule1 > Rule2 > Rule3 > Rule4)
 anomaly_list.sort(key=lambda x: x["severity"], reverse=True)
+
 active_alarms = [a for a in anomaly_list if a["uid"] not in st.session_state.resolved_alarms]
 resolved_alarms = [a for a in anomaly_list if a["uid"] in st.session_state.resolved_alarms]
 active_anom_count = len(active_alarms)
@@ -385,31 +435,32 @@ if st.session_state.investigate_target and st.session_state.investigate_target["
     st.session_state.investigate_target = None
 
 # ----------------------------
-# 카드용 데이터 구조 (미조치 이상 설비만 표시)
+# 카드용 데이터 구조 (SPC 미조치 이상 설비 연동)
 # ----------------------------
 stage_data = []
 
 for s in STAGES:
-    worst_unresolved_z, worst_unresolved_m, worst_unresolved_v = -1, None, np.nan
-
+    worst_sev = -1
+    best_info = None
+    
+    # 해당 스테이지의 최신 데이터(latest_run_val)에서 발생한 알람 중 가장 우선순위가 높은 것 색출
     for m in METRICS:
         f = fcol(s, m)
-        if f in df.columns:
-            v = pd.to_numeric(cur.get(f), errors="coerce")
-            z = limit_exceed_score(v, f)
-            uid = f"alarm_{run_val}_{f}"
+        uid = f"alarm_{latest_run_val}_{f}"
+        
+        alarm_match = next((a for a in latest_active_alarms if a["uid"] == uid), None)
+        if alarm_match and alarm_match["severity"] > worst_sev:
+            worst_sev = alarm_match["severity"]
+            best_info = alarm_match
 
-            if z >= 3.0 and uid not in st.session_state.resolved_alarms:
-                if z > worst_unresolved_z:
-                    worst_unresolved_z, worst_unresolved_m, worst_unresolved_v = z, m, v
-
-    if worst_unresolved_z >= 3.0:
+    if best_info:
         stage_data.append({
             "stage": s,
-            "metric": worst_unresolved_m,
-            "val": worst_unresolved_v,
-            "z": worst_unresolved_z,
+            "metric": best_info["feature"].split("_", 1)[1],
+            "val": best_info["val"],
+            "z": best_info["severity"],
             "state": "active",
+            "rule_desc": best_info["rule"]
         })
 
 stage_data.sort(key=lambda x: x["z"], reverse=True)
@@ -501,13 +552,14 @@ with top_r:
             st.markdown('#### 설비 이상 조치 현황 <span class="popover-tooltip"><span class="info-badge" style="background-color:#9CA3AF; color:white; font-size:11px; margin-bottom:5px;">i</span><span class="popover-tooltip-text">리스트의 [🔍] 버튼 클릭 시, 해당 지표를 하단 트렌드 차트 및 상태 카드에 즉시 띄워 집중 분석할 수 있습니다.</span></span>', unsafe_allow_html=True)
             
             if not active_alarms and not resolved_alarms:
-                st.info("최근 감지된 설비 이상이 없습니다.")
+                st.info("최근 감지된 SPC 룰 이상이 없습니다.")
             
             for a in active_alarms:
                 with st.container():
                     c_text, c_btn1 = st.columns([8.5, 1.5])
                     with c_text:
-                        st.error(f"**[{a['severity']:.1f}sigma]** 순번 {a['run']} : {a['details']}")
+                        # 화면에 감지된 SPC 룰을 상세 표기
+                        st.error(f"**[{a['rule']}]** 순번 {a['run']} : {a['details'].split('[')[0]}")
                     with c_btn1:
                         st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True) 
                         if st.button("🔍", key=f"btn_inv_{a['uid']}", use_container_width=True):
@@ -542,7 +594,7 @@ st.markdown("")
 left, right = st.columns([2.55, 1.45], gap="medium")
 
 with left:
-    st.markdown('<div class="panel"><div class="pt">공정별 실시간 상태 요약 (SCADA View) <span class="pill" style="margin-left:8px; display:inline-block; padding:2px 10px; border-radius:999px; background:rgba(220,38,38,0.1); color:#DC2626; font-size:12px; font-weight:800; border:1px solid rgba(220,38,38,0.3);">우선순위 자동정렬</span></div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel"><div class="pt">공정별 실시간 상태 요약 (SCADA View) <span class="pill" style="margin-left:8px; display:inline-block; padding:2px 10px; border-radius:999px; background:rgba(220,38,38,0.1); color:#DC2626; font-size:12px; font-weight:800; border:1px solid rgba(220,38,38,0.3);">SPC 룰 기반 정렬</span></div></div>', unsafe_allow_html=True)
 
     if stage_data:
         cols = st.columns(len(stage_data), gap="small")
@@ -553,15 +605,23 @@ with left:
             target_f = fcol(s, target_m)
             val = s_info["val"]
             state = s_info["state"]
-            z_score = s_info["z"]
+            z_score = s_info["z"] # 이제 z_score 변수에는 severity 값이 들어있음
+            rule_desc = s_info["rule_desc"]
             
             metric_ko = SENSOR_KO.get(target_m, target_m)
             eq_code, eq_desc = STAGE_NAMES.get(s, (f"ST-{s}", f"공정 {s}"))
             
+            # 카드에 보여줄 발생 SPC 룰 포맷팅
+            rule_ko = "기타 이상"
+            if "Rule 1" in rule_desc: rule_ko = "R1: 한계 이탈"
+            elif "Rule 2" in rule_desc: rule_ko = "R2: 공정 편향"
+            elif "Rule 3" in rule_desc: rule_ko = "R3: 연속 증감"
+            elif "Rule 4" in rule_desc: rule_ko = "R4: 교대 증감"
+            
             mu, sd, lcl, ucl = CTRL_LIMITS.get(target_f, (0, 0, 0, 0))
             
             if state == "active":
-                bg_color = BAD if z_score >= 3.5 else WARN
+                bg_color = BAD if z_score >= 3.0 else WARN
             else:
                 bg_color = GOOD
 
@@ -573,7 +633,7 @@ with left:
                 f'<div style="background-color: {bg_color}; border-radius: 12px; padding: 15px 15px 12px 15px; text-align: center; color: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1); height: 210px; display: flex; flex-direction: column; justify-content: space-between;">'
                 f'<div>'
                 f'  <div style="font-weight: 900; font-size: 16px; margin-bottom: 0px; letter-spacing: 0.5px; line-height: 1.1;">{eq_code}</div>'
-                f'  <div style="font-size: 10px; opacity: 0.85; margin-bottom: 2px; line-height: 1.1;">{eq_desc}</div>'
+                f'  <div style="font-size: 10px; opacity: 0.85; margin-bottom: 2px; line-height: 1.1;">{eq_desc} | {rule_ko}</div>'
                 f'  <div style="font-size: 25px; font-weight: 700; opacity: 1.0; line-height: 1.1;">{metric_ko}</div>'
                 f'</div>'
 
@@ -601,7 +661,7 @@ with left:
     st.markdown("")
 
     # ----------------------------
-    # Recent Trend
+    # Recent Trend (SPC 마커 완벽 적용)
     # ----------------------------
     trend_feature = fcol(st.session_state.trend_stage, st.session_state.trend_metric)
     
@@ -651,18 +711,19 @@ with left:
 
     fig.add_trace(go.Scatter(x=plot["run"], y=plot[trend_feature], mode="lines+markers", name=translated_trend_feature, line=dict(color=SAMSUNG_BLUE_2)))
 
-    if np.isfinite(lcl) and np.isfinite(ucl):
-        out_of_control = plot[(plot[trend_feature] > ucl) | (plot[trend_feature] < lcl)]
-        
-        active_run_vals = [a["run"] for a in active_alarms if a["uid"].endswith(f"_{trend_feature}")]
-        
-        active_points = out_of_control[out_of_control["run"].isin(active_run_vals)]
-        resolved_points = out_of_control[~out_of_control["run"].isin(active_run_vals)]
-        
-        if not active_points.empty:
-            fig.add_trace(go.Scatter(x=active_points["run"], y=active_points[trend_feature], mode="markers", name="미조치 위험(3σ)", marker=dict(size=11, color=BAD, symbol="circle-open", line=dict(width=2.5))))
-        if not resolved_points.empty:
-            fig.add_trace(go.Scatter(x=resolved_points["run"], y=resolved_points[trend_feature], mode="markers", name="조치 완료 이력", marker=dict(size=9, color=RESOLVED_GRAY, symbol="circle-open", line=dict(width=1.5))))
+    # [핵심] 3시그마 이탈이 아닌, SPC Zone Rule 감지 이력을 기반으로 마커를 찍도록 수정
+    feature_all_alarms = [a for a in anomaly_list if a["feature"] == trend_feature]
+    
+    active_run_vals = [a["run"] for a in feature_all_alarms if a["uid"] not in st.session_state.resolved_alarms]
+    resolved_run_vals = [a["run"] for a in feature_all_alarms if a["uid"] in st.session_state.resolved_alarms]
+    
+    active_points = plot[plot["run"].isin(active_run_vals)]
+    resolved_points = plot[plot["run"].isin(resolved_run_vals)]
+    
+    if not active_points.empty:
+        fig.add_trace(go.Scatter(x=active_points["run"], y=active_points[trend_feature], mode="markers", name="미조치 이상 (SPC감지)", marker=dict(size=11, color=BAD, symbol="circle-open", line=dict(width=2.5))))
+    if not resolved_points.empty:
+        fig.add_trace(go.Scatter(x=resolved_points["run"], y=resolved_points[trend_feature], mode="markers", name="조치 완료 이력", marker=dict(size=9, color=RESOLVED_GRAY, symbol="circle-open", line=dict(width=1.5))))
 
     if st.session_state.investigate_target and st.session_state.investigate_target["feature"] == trend_feature:
         inv_run = st.session_state.investigate_target["run"]
@@ -696,7 +757,7 @@ with left:
 
 with right:
     # ----------------------------
-    # Stage Profile (텍스트 겹침 완벽 수정본)
+    # Stage Profile 
     # ----------------------------
     st.markdown('<div class="panel"><div class="pt">Stage Profile <span class="pill" style="margin-left:8px; display:inline-block; padding:2px 10px; border-radius:999px; background:rgba(20,40,160,0.05); color:#1428A0; font-size:12px; font-weight:800; border:1px solid rgba(20,40,160,0.2);">8개 지표 현황</span></div></div>', unsafe_allow_html=True)
 
@@ -736,7 +797,6 @@ with right:
         if target_val is not None:
             fig_m.add_hline(y=target_val, line_dash="dash", line_color="#10B981", line_width=1.5, opacity=0.7)
 
-        # [핵심 수정] margin 조절, x축 글자 45도 꺾기, y축 도메인(domain) 조절로 제목 겹침 방지
         layout_dict = dict(
             height=190, 
             margin=dict(l=35, r=10, t=35, b=45), 
@@ -753,7 +813,7 @@ with right:
             yaxis=dict(
                 gridcolor="rgba(0,0,0,0.05)",
                 zeroline=False,
-                domain=[0, 0.8]  # 그래프를 아래 80% 영역에만 그려서 위쪽 공간 확보
+                domain=[0, 0.8]  
             ),
             showlegend=False,
             title=dict(
@@ -805,7 +865,7 @@ with right:
         st.info("현재 코드 파일 위치의 'images' 폴더 안에 'image1.png' 또는 'image1.jpg' 파일이 있는지 확인하세요.")
 
 # ----------------------------
-# 실시간 데이터 시뮬레이터
+# 실시간 데이터 시뮬레이터 (스파이크 발생기 유지)
 # ----------------------------
 if st.session_state.get("sim_toggle", False):
     time.sleep(3)
